@@ -12,7 +12,7 @@ local Mouse = LocalPlayer:GetMouse()
 local WindUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"))()
 
 local Window = WindUI:CreateWindow({
-    Title = "Aetherist | 50+ Arsenal",
+    Title = "Aetherist | .gg/7JdQGwvfNu",
     Folder = "Aetherist_Arsenal",
     Icon = "solar:galaxy-bold-duotone",
     NewElements = true,
