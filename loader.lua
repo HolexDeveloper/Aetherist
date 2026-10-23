@@ -16,7 +16,7 @@
 
 -- Universal script: runs for every game that is NOT in CONFIG below
 local Universal_Script = [[
-loadstring(game:HttpGet("https://raw.githubusercontent.com/HolexDeveloper/Aetherist/refs/heads/main/Universal.lua", true))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/HolexDeveloper/Aetherist/refs/heads/main/Scripts/Universal.lua",true))()
 ]]
 
 -- Entrenched script: runs only when LocalPlayer is detected inside Entrenched WW1
