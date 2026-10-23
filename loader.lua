@@ -21,7 +21,7 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/HolexDeveloper/Aether
 
 -- Entrenched script: runs only when LocalPlayer is detected inside Entrenched WW1
 local Entrenched_Script = [[
-loadstring(game:HttpGet("https://raw.githubusercontent.com/HolexDeveloper/Aetherist/refs/heads/main/Entrenched.lua", true))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/HolexDeveloper/Aetherist/refs/heads/main/Scripts/Entrenched.lua",true))()
 ]]
 
 -- =====================================================================
