@@ -4,10 +4,9 @@
 
     Simple Roblox script loader with a local game-ID library (CONFIG).
     - Waits for the game to load and detects the LocalPlayer.
-    - If game.GameId matches an entry in CONFIG, that game's local script runs.
-    - If the GameId does NOT match any supported game, the loader simply runs
-      the local Universal_Script (no extra fetching needed):
-      loadstring(game:HttpGet("https://raw.githubusercontent.com/HolexDeveloper/Aetherist/refs/heads/main/Universal.lua", true))()
+    - If game.PlaceId matches an entry in CONFIG, that game's local script runs.
+    - If the PlaceId does NOT match any supported game, the loader simply runs
+      the local Universal_Script (no extra fetching needed).
 ]]
 
 -- =====================================================================
@@ -16,22 +15,32 @@
 
 -- Universal script: runs for every game that is NOT in CONFIG below
 local Universal_Script = [[
-loadstring(game:HttpGet("https://raw.githubusercontent.com/HolexDeveloper/Aetherist/refs/heads/main/Scripts/Universal.lua",true))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/HolexDeveloper/Aetherist/refs/heads/main/Scripts/Universal.lua", true))()
 ]]
 
 -- Entrenched script: runs only when LocalPlayer is detected inside Entrenched WW1
 local Entrenched_Script = [[
-loadstring(game:HttpGet("https://raw.githubusercontent.com/HolexDeveloper/Aetherist/refs/heads/main/Scripts/Entrenched.lua",true))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/HolexDeveloper/Aetherist/refs/heads/main/Scripts/Entrenched.lua", true))()
+]]
+
+-- FPV Drone Battlefield script: runs only inside FPV Drone Battlefield
+local FPV_Drone_Battlefield_Script = [[
+loadstring(game:HttpGet("https://raw.githubusercontent.com/HolexDeveloper/Aetherist/refs/heads/main/Scripts/FPVdronebattlefield.txt", true))()
 ]]
 
 -- =====================================================================
 -- LOCAL LIBRARY OF SUPPORTED GAMES
 -- =====================================================================
 local CONFIG = {
-    [3678761576] = { -- Entrenched WW1 - https://www.roblox.com/games/3678761576/ENTRENCHED
+    [3678761576] = { -- Entrenched WW1
         title  = "Entrenched WW1",
         page   = "https://www.roblox.com/games/3678761576/ENTRENCHED",
         script = Entrenched_Script,
+    },
+    [100661692738190] = { -- FPV Drone Battlefield
+        title  = "FPV Drone Battlefield",
+        page   = "https://www.roblox.com/games/100661692738190/FPV-Drone-Battlefield",
+        script = FPV_Drone_Battlefield_Script,
     },
 }
 
@@ -42,18 +51,23 @@ repeat
     task.wait()
 until game:IsLoaded()
 
-local LocalPlayer = game:GetService("Players").LocalPlayer
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+
 if not LocalPlayer then
     warn("[Aetherist] LocalPlayer not found, cannot continue.")
     return
 end
 
-print(("[Aetherist] Loaded. GameId: %d | Player: %s"):format(game.GameId, LocalPlayer.Name))
+-- Use game.PlaceId, NOT game.GameId (which often returns the Universe ID)
+local currentPlaceId = game.PlaceId
+
+print(("[Aetherist] Loaded. PlaceId: %d | Player: %s"):format(currentPlaceId, LocalPlayer.Name))
 
 -- =====================================================================
 -- RESOLVE SCRIPT (game-specific or local Universal fallback)
 -- =====================================================================
-local data = CONFIG[game.GameId]
+local data = CONFIG[currentPlaceId]
 local scriptSource
 
 if data then
