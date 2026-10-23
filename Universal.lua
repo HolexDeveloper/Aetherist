@@ -276,7 +276,7 @@ T(mi1, "51. Anti-Kick", "", Settings.Misc.AntiKick, function(v) Settings.Misc.An
 T(mi1, "52. Anti-Crash", "", Settings.Misc.AntiCrash, function(v) Settings.Misc.AntiCrash = v end)
 B(mi1, "53. Server Hop", function() game:GetService("TeleportService"):Teleport(game.PlaceId, LocalPlayer) end)
 B(mi1, "54. Rejoin", function() game:GetService("TeleportService"):TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer) end)
-B(mi1, "55. Copy IP", function() setclipboard(game.JobId) WindUI:Notify({Title = "Copied", Content = "Job ID copied."}) end)
+B(mi1, "55. Copy JobID", function() setclipboard(game.JobId) WindUI:Notify({Title = "Copied", Content = "Job ID copied."}) end)
 T(mi1, "56. Chat Spam", "", Settings.Misc.ChatSpam, function(v) Settings.Misc.ChatSpam = v if v then task.spawn(function() while Settings.Misc.ChatSpam do game:GetService("ReplicatedStorage"):FindFirstChild("DefaultChatSystemChatEvents"):FindFirstChild("SayMessageRequest"):FireServer(Settings.Misc.SpamMsg, "All") task.wait(1) end end) end end)
 I(mi1, "Spam Message", Settings.Misc.SpamMsg, function(v) Settings.Misc.SpamMsg = v end)
 T(mi1, "57. Server Lock", "", Settings.Misc.ServerLock, function(v) Settings.Misc.ServerLock = v end)
