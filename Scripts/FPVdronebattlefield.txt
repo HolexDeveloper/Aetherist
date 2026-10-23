@@ -1,0 +1,1253 @@
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
+
+local LocalPlayer = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+local IsMobile = UserInputService.TouchEnabled
+
+-- ============================================
+-- SETTINGS
+-- ============================================
+local Settings = {
+    -- ESP
+    ESP_Enabled = true,
+    Box_Enabled = true,
+    Box_Color = Color3.fromRGB(0, 255, 255),
+    Box_Thickness = 2,
+    Skeleton_Enabled = true,
+    Skeleton_Color = Color3.fromRGB(255, 255, 255),
+    Tracer_Enabled = true,
+    Tracer_Color = Color3.fromRGB(255, 0, 0),
+    Distance_Enabled = true,
+    HealthBar_Enabled = true,
+    HealthText_Enabled = true,
+    
+    -- Aimlock
+    Aimlock_Enabled = true,
+    Aimlock_Key = Enum.UserInputType.MouseButton2,
+    Aimlock_FOV = 150,
+    Aimlock_Smoothing = 0.15,
+    Aimlock_Mode = "Head", -- "Head" or "Auto"
+    Aimlock_WallCheck = true,
+    
+    -- Radar
+    Radar_Enabled = true,
+    Radar_Radius = 400,
+    Radar_Size = IsMobile and 180 or 150,
+    Radar_SweepSpeed = 3,
+    
+    -- Movement
+    Noclip_Enabled = false,
+    
+    -- Drone
+    Drone_Filter = false,
+    Drone_HideDistance = 2,
+    
+    -- UI
+    UI_Theme = "Cyberpunk",
+    UI_Accent = Color3.fromRGB(0, 255, 255),
+    UI_Text = Color3.fromRGB(255, 255, 255),
+    UI_PerformanceMode = false,
+    
+    -- Units
+    Unit_System = "Meters",
+    
+    -- Cursor
+    Cursor_Enabled = true,
+    Cursor_SpinSpeed = 2,
+    
+    -- Keybinds (PC)
+    Keybinds = {
+        ToggleUI = Enum.KeyCode.F1,
+        ToggleESP = Enum.KeyCode.Insert,
+        ToggleAimlock = Enum.KeyCode.RightShift,
+        ToggleNoclip = Enum.KeyCode.F5,
+    },
+}
+
+local Themes = {
+    Cyberpunk = {
+        Bg = Color3.fromRGB(10, 10, 20), Accent = Color3.fromRGB(0, 255, 255),
+        Accent2 = Color3.fromRGB(139, 92, 246), Text = Color3.fromRGB(255, 255, 255), Border = Color3.fromRGB(0, 255, 255),
+    },
+    DarkGlass = {
+        Bg = Color3.fromRGB(20, 20, 30), Accent = Color3.fromRGB(255, 255, 255),
+        Accent2 = Color3.fromRGB(139, 92, 246), Text = Color3.fromRGB(255, 255, 255), Border = Color3.fromRGB(100, 100, 100),
+    },
+    Onyx = {
+        Bg = Color3.fromRGB(0, 0, 0), Accent = Color3.fromRGB(255, 215, 0),
+        Accent2 = Color3.fromRGB(255, 215, 0), Text = Color3.fromRGB(255, 255, 255), Border = Color3.fromRGB(255, 215, 0),
+    },
+}
+
+-- ============================================
+-- STATE
+-- ============================================
+local State = {
+    isLocking = false,
+    currentLockTarget = nil,
+    noclipActive = false,
+    sweepAngle = 0,
+    cursorAngle = 0,
+    fovAngle = 0,
+    fps = 60,
+    fpsCounter = 0,
+    fpsTime = os.clock(),
+}
+
+local PlayerCache = {}
+local DroneCache = {}
+local TargetHistory = { CurrentTarget = nil, LastPos = Vector3.zero, LastVel = Vector3.zero, LastAccel = Vector3.zero, LastTime = 0 }
+
+local R6Connections = {
+    { "Head", "Torso" }, { "Left Arm", "Torso" }, { "Right Arm", "Torso" },
+    { "Left Leg", "Torso" }, { "Right Leg", "Torso" },
+}
+local R15Connections = {
+    { "Head", "UpperTorso" }, { "LeftUpperArm", "UpperTorso" }, { "RightUpperArm", "UpperTorso" },
+    { "LeftUpperLeg", "LowerTorso" }, { "RightUpperLeg", "LowerTorso" },
+    { "LeftLowerArm", "LeftUpperArm" }, { "RightLowerArm", "RightUpperArm" },
+    { "LeftLowerLeg", "LeftUpperLeg" }, { "RightLowerLeg", "RightUpperLeg" },
+}
+
+-- ============================================
+-- DRAWING POOLS
+-- ============================================
+local ObjectLinePool, ObjectLineIndex = {}, 0
+local ObjectTriPool, ObjectTriIndex = {}, 0
+local ObjectTextPool, ObjectTextIndex = {}, 0
+
+local function AcquireLine()
+    ObjectLineIndex += 1
+    local ln = ObjectLinePool[ObjectLineIndex]
+    if not ln then
+        ln = Drawing.new("Line"); ln.Thickness = 2; ln.Transparency = 1
+        ObjectLinePool[ObjectLineIndex] = ln
+    end
+    ln.Visible = false; return ln
+end
+
+local function AcquireTri()
+    ObjectTriIndex += 1
+    local t = ObjectTriPool[ObjectTriIndex]
+    if not t then t = Drawing.new("Triangle"); ObjectTriPool[ObjectTriIndex] = t end
+    t.Visible = false; return t
+end
+
+local function AcquireText()
+    ObjectTextIndex += 1
+    local t = ObjectTextPool[ObjectTextIndex]
+    if not t then
+        t = Drawing.new("Text"); t.Size = 13; t.Center = false; t.Outline = true
+        ObjectTextPool[ObjectTextIndex] = t
+    end
+    t.Visible = false; return t
+end
+
+local function ReleasePools()
+    for i = 1, ObjectLineIndex do ObjectLinePool[i].Visible = false end
+    for i = 1, ObjectTriIndex do ObjectTriPool[i].Visible = false end
+    for i = 1, ObjectTextIndex do ObjectTextPool[i].Visible = false end
+    ObjectLineIndex, ObjectTriIndex, ObjectTextIndex = 0, 0, 0
+end
+
+-- ============================================
+-- PERSISTENT DRAWING OBJECTS
+-- ============================================
+local FOVCircle = Drawing.new("Circle")
+FOVCircle.Visible = false; FOVCircle.Color = Color3.fromRGB(255, 255, 255)
+FOVCircle.Thickness = 1; FOVCircle.Filled = false; FOVCircle.NumSides = 64
+
+local FOVDash1 = Drawing.new("Line")
+FOVDash1.Visible = false; FOVDash1.Color = Color3.fromRGB(0, 255, 255); FOVDash1.Thickness = 2
+
+local FOVDash2 = Drawing.new("Line")
+FOVDash2.Visible = false; FOVDash2.Color = Color3.fromRGB(139, 92, 246); FOVDash2.Thickness = 2
+
+local StatusText = Drawing.new("Text")
+StatusText.Color = Color3.fromRGB(255, 255, 255); StatusText.Size = 14
+StatusText.Outline = true; StatusText.Visible = true; StatusText.Position = Vector2.new(10, 10)
+
+local CursorCircle = Drawing.new("Circle")
+CursorCircle.Visible = false; CursorCircle.Color = Color3.fromRGB(0, 255, 255)
+CursorCircle.Thickness = 2; CursorCircle.Radius = 8; CursorCircle.Filled = false; CursorCircle.NumSides = 24
+
+local CursorArms = {}
+for i = 1, 4 do
+    local arm = Drawing.new("Line")
+    arm.Visible = false; arm.Color = Color3.fromRGB(0, 255, 255); arm.Thickness = 2
+    CursorArms[i] = arm
+end
+
+-- ============================================
+-- UI: GLASS-MORPHISM MAIN HUB
+-- ============================================
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "AeroStrikeUI"; ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = game.CoreGui
+
+local function ApplyGlass(frame, theme)
+    frame.BackgroundColor3 = theme.Bg; frame.BackgroundTransparency = 0.4; frame.BorderSizePixel = 0
+    local corner = Instance.new("UICorner"); corner.CornerRadius = UDim.new(0, 12); corner.Parent = frame
+    local stroke = Instance.new("UIStroke"); stroke.Color = theme.Border; stroke.Thickness = 2; stroke.Transparency = 0.2; stroke.Parent = frame
+    local gradient = Instance.new("UIGradient")
+    gradient.Color = ColorSequence.new({ColorSequenceKeypoint.new(0, theme.Accent), ColorSequenceKeypoint.new(1, theme.Accent2)})
+    gradient.Rotation = 90; gradient.Parent = stroke
+    return frame
+end
+
+local HubFrame = Instance.new("Frame")
+HubFrame.Size = UDim2.new(0, 480, 0, 380); HubFrame.Position = UDim2.new(0.5, -240, 0.5, -190)
+HubFrame.Visible = false; HubFrame.Parent = ScreenGui
+ApplyGlass(HubFrame, Themes[Settings.UI_Theme])
+
+local TitleBar = Instance.new("Frame")
+TitleBar.Size = UDim2.new(1, 0, 0, 40); TitleBar.BackgroundTransparency = 1; TitleBar.Parent = HubFrame
+
+local TitleLabel = Instance.new("TextLabel")
+TitleLabel.Size = UDim2.new(1, -40, 1, 0); TitleLabel.Position = UDim2.new(0, 15, 0, 0)
+TitleLabel.BackgroundTransparency = 1; TitleLabel.Text = "BREAD OVERLAY v10.5.0"
+TitleLabel.TextColor3 = Themes[Settings.UI_Theme].Text; TitleLabel.Font = Enum.Font.GothamBold
+TitleLabel.TextSize = 18; TitleLabel.TextXAlignment = Enum.TextXAlignment.Left; TitleLabel.Parent = TitleBar
+
+local CloseBtn = Instance.new("TextButton")
+CloseBtn.Size = UDim2.new(0, 30, 0, 30); CloseBtn.Position = UDim2.new(1, -35, 0, 5)
+CloseBtn.BackgroundTransparency = 1; CloseBtn.Text = "X"
+CloseBtn.TextColor3 = Themes[Settings.UI_Theme].Text; CloseBtn.Font = Enum.Font.GothamBold
+CloseBtn.TextSize = 16; CloseBtn.Parent = TitleBar
+
+local Sidebar = Instance.new("Frame")
+Sidebar.Size = UDim2.new(0, 80, 1, -40); Sidebar.Position = UDim2.new(0, 0, 0, 40)
+Sidebar.BackgroundTransparency = 1; Sidebar.Parent = HubFrame
+
+local SidebarLayout = Instance.new("UIListLayout")
+SidebarLayout.FillDirection = Enum.FillDirection.Vertical; SidebarLayout.Padding = UDim.new(0, 8)
+SidebarLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center; SidebarLayout.Parent = Sidebar
+
+local ContentArea = Instance.new("Frame")
+ContentArea.Size = UDim2.new(1, -90, 1, -50); ContentArea.Position = UDim2.new(0, 85, 0, 45)
+ContentArea.BackgroundTransparency = 1; ContentArea.Parent = HubFrame
+
+local Tabs = {}
+local function CreateTab(name, iconText)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0, 60, 0, 60); btn.BackgroundColor3 = Themes[Settings.UI_Theme].Bg
+    btn.BackgroundTransparency = 0.6; btn.Text = iconText
+    btn.TextColor3 = Themes[Settings.UI_Theme].Text; btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 20; btn.Parent = Sidebar
+    local corner = Instance.new("UICorner"); corner.CornerRadius = UDim.new(0, 8); corner.Parent = btn
+    
+    local page = Instance.new("ScrollingFrame")
+    page.Size = UDim2.new(1, 0, 1, 0); page.BackgroundTransparency = 1
+    page.BorderSizePixel = 0; page.ScrollBarThickness = 4; page.Visible = false; page.Parent = ContentArea
+    local layout = Instance.new("UIListLayout"); layout.Padding = UDim.new(0, 6); layout.Parent = page
+    
+    Tabs[name] = { Button = btn, Page = page }
+    btn.MouseButton1Click:Connect(function()
+        for _, tab in pairs(Tabs) do tab.Page.Visible = false end
+        page.Visible = true
+        TweenService:Create(btn, TweenInfo.new(0.2), { BackgroundTransparency = 0.3 }):Play()
+    end)
+    return page
+end
+
+local function CreateToggle(parent, text, default, callback)
+    local container = Instance.new("Frame")
+    container.Size = UDim2.new(1, -10, 0, 35); container.BackgroundTransparency = 1; container.Parent = parent
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -50, 1, 0); label.Position = UDim2.new(0, 10, 0, 0)
+    label.BackgroundTransparency = 1; label.Text = text
+    label.TextColor3 = Themes[Settings.UI_Theme].Text; label.Font = Enum.Font.Gotham
+    label.TextSize = 14; label.TextXAlignment = Enum.TextXAlignment.Left; label.Parent = container
+    local toggle = Instance.new("TextButton")
+    toggle.Size = UDim2.new(0, 40, 0, 20); toggle.Position = UDim2.new(1, -50, 0.5, -10)
+    toggle.BackgroundColor3 = default and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 0, 0)
+    toggle.Text = ""; toggle.Parent = container
+    local corner = Instance.new("UICorner"); corner.CornerRadius = UDim.new(1, 0); corner.Parent = toggle
+    local state = default
+    toggle.MouseButton1Click:Connect(function()
+        state = not state
+        TweenService:Create(toggle, TweenInfo.new(0.2), { BackgroundColor3 = state and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 0, 0) }):Play()
+        callback(state)
+    end)
+end
+
+local function CreateSlider(parent, text, min, max, default, callback)
+    local container = Instance.new("Frame")
+    container.Size = UDim2.new(1, -10, 0, 45); container.BackgroundTransparency = 1; container.Parent = parent
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -20, 0, 20); label.Position = UDim2.new(0, 10, 0, 0)
+    label.BackgroundTransparency = 1; label.Text = text .. ": " .. tostring(default)
+    label.TextColor3 = Themes[Settings.UI_Theme].Text; label.Font = Enum.Font.Gotham
+    label.TextSize = 13; label.TextXAlignment = Enum.TextXAlignment.Left; label.Parent = container
+    local slider = Instance.new("TextButton")
+    slider.Size = UDim2.new(1, -20, 0, 15); slider.Position = UDim2.new(0, 10, 0, 25)
+    slider.BackgroundColor3 = Themes[Settings.UI_Theme].Bg; slider.Text = ""; slider.Parent = container
+    local corner = Instance.new("UICorner"); corner.CornerRadius = UDim.new(0, 6); corner.Parent = slider
+    local fill = Instance.new("Frame")
+    fill.Size = UDim2.new((default - min) / (max - min), 0, 1, 0)
+    fill.BackgroundColor3 = Themes[Settings.UI_Theme].Accent; fill.BorderSizePixel = 0; fill.Parent = slider
+    local fcorner = Instance.new("UICorner"); fcorner.CornerRadius = UDim.new(0, 6); fcorner.Parent = fill
+    local dragging = false
+    slider.MouseButton1Down:Connect(function() dragging = true end)
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            local rel = (input.Position.X - slider.AbsolutePosition.X) / slider.AbsoluteSize.X
+            rel = math.clamp(rel, 0, 1); local val = min + (max - min) * rel
+            fill.Size = UDim2.new(rel, 0, 1, 0)
+            label.Text = text .. ": " .. string.format("%.1f", val)
+            callback(val)
+        end
+    end)
+end
+
+local function CreateDropdown(parent, text, options, default, callback)
+    local container = Instance.new("Frame")
+    container.Size = UDim2.new(1, -10, 0, 35); container.BackgroundTransparency = 1; container.Parent = parent
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -120, 1, 0); label.Position = UDim2.new(0, 10, 0, 0)
+    label.BackgroundTransparency = 1; label.Text = text
+    label.TextColor3 = Themes[Settings.UI_Theme].Text; label.Font = Enum.Font.Gotham
+    label.TextSize = 14; label.TextXAlignment = Enum.TextXAlignment.Left; label.Parent = container
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0, 100, 0, 25); btn.Position = UDim2.new(1, -110, 0.5, -12)
+    btn.BackgroundColor3 = Themes[Settings.UI_Theme].Bg; btn.Text = default
+    btn.TextColor3 = Themes[Settings.UI_Theme].Text; btn.Font = Enum.Font.Gotham
+    btn.TextSize = 12; btn.Parent = container
+    local corner = Instance.new("UICorner"); corner.CornerRadius = UDim.new(0, 6); corner.Parent = btn
+    local currentIdx = table.find(options, default) or 1
+    btn.MouseButton1Click:Connect(function()
+        currentIdx = (currentIdx % #options) + 1; btn.Text = options[currentIdx]
+        callback(options[currentIdx])
+    end)
+end
+
+local PageESP = CreateTab("ESP", "📊")
+local PageAimlock = CreateTab("Aimlock", "🎯")
+local PageRadar = CreateTab("Radar", "🧭")
+local PageMovement = CreateTab("Movement", "🏃")
+local PageSettings = CreateTab("Settings", "⚙️")
+
+CreateToggle(PageESP, "ESP Enabled", Settings.ESP_Enabled, function(v) Settings.ESP_Enabled = v end)
+CreateToggle(PageESP, "Box ESP", Settings.Box_Enabled, function(v) Settings.Box_Enabled = v end)
+CreateToggle(PageESP, "Skeleton ESP", Settings.Skeleton_Enabled, function(v) Settings.Skeleton_Enabled = v end)
+CreateToggle(PageESP, "Tracers", Settings.Tracer_Enabled, function(v) Settings.Tracer_Enabled = v end)
+CreateToggle(PageESP, "Distance", Settings.Distance_Enabled, function(v) Settings.Distance_Enabled = v end)
+CreateToggle(PageESP, "Health Bars", Settings.HealthBar_Enabled, function(v) Settings.HealthBar_Enabled = v end)
+CreateToggle(PageESP, "Health Values", Settings.HealthText_Enabled, function(v) Settings.HealthText_Enabled = v end)
+CreateToggle(PageESP, "Drone Filter", Settings.Drone_Filter, function(v) Settings.Drone_Filter = v end)
+CreateSlider(PageESP, "Box Thickness", 1, 5, Settings.Box_Thickness, function(v) Settings.Box_Thickness = v end)
+
+CreateToggle(PageAimlock, "Aimlock Enabled", Settings.Aimlock_Enabled, function(v) Settings.Aimlock_Enabled = v end)
+CreateSlider(PageAimlock, "FOV Size", 50, 500, Settings.Aimlock_FOV, function(v) Settings.Aimlock_FOV = v end)
+CreateSlider(PageAimlock, "Smoothing", 0, 1, Settings.Aimlock_Smoothing, function(v) Settings.Aimlock_Smoothing = v end)
+CreateToggle(PageAimlock, "Wall Check", Settings.Aimlock_WallCheck, function(v) Settings.Aimlock_WallCheck = v end)
+CreateDropdown(PageAimlock, "Hitbox Mode", {"Head", "Auto"}, Settings.Aimlock_Mode, function(v) Settings.Aimlock_Mode = v end)
+
+CreateToggle(PageRadar, "Radar", Settings.Radar_Enabled, function(v) Settings.Radar_Enabled = v end)
+CreateSlider(PageRadar, "Radar Range", 100, 2000, Settings.Radar_Radius, function(v) Settings.Radar_Radius = v end)
+CreateSlider(PageRadar, "Sweep Speed", 1, 10, Settings.Radar_SweepSpeed, function(v) Settings.Radar_SweepSpeed = v end)
+
+CreateToggle(PageMovement, "Noclip (Terrain Walk)", Settings.Noclip_Enabled, function(v) Settings.Noclip_Enabled = v end)
+
+CreateDropdown(PageSettings, "Theme", {"Cyberpunk", "DarkGlass", "Onyx"}, Settings.UI_Theme, function(v)
+    Settings.UI_Theme = v; local theme = Themes[v]
+    ApplyGlass(HubFrame, theme); TitleLabel.TextColor3 = theme.Text; CloseBtn.TextColor3 = theme.Text
+    for _, child in ipairs(Sidebar:GetChildren()) do
+        if child:IsA("TextButton") then child.TextColor3 = theme.Text; child.BackgroundColor3 = theme.Bg end
+    end
+end)
+CreateDropdown(PageSettings, "Units", {"Meters", "Kilometers", "Miles", "Feet"}, Settings.Unit_System, function(v) Settings.Unit_System = v end)
+CreateToggle(PageSettings, "Performance Mode", Settings.UI_PerformanceMode, function(v) Settings.UI_PerformanceMode = v end)
+CreateToggle(PageSettings, "Custom Cursor", Settings.Cursor_Enabled, function(v) Settings.Cursor_Enabled = v end)
+
+do
+    local dragging, dragStart, startPos
+    TitleBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true; dragStart = input.Position; startPos = HubFrame.Position
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            local delta = input.Position - dragStart
+            HubFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
+    end)
+end
+CloseBtn.MouseButton1Click:Connect(function() HubFrame.Visible = false end)
+
+-- ============================================
+-- KEYBIND OVERLAY
+-- ============================================
+local KeybindOverlay = Instance.new("Frame")
+KeybindOverlay.Size = UDim2.new(0, 200, 0, 180); KeybindOverlay.Position = UDim2.new(1, -210, 1, -190)
+KeybindOverlay.Visible = true; KeybindOverlay.Parent = ScreenGui
+ApplyGlass(KeybindOverlay, Themes[Settings.UI_Theme]); KeybindOverlay.BackgroundTransparency = 0.7
+
+local KBTitle = Instance.new("TextLabel")
+KBTitle.Size = UDim2.new(1, 0, 0, 25); KBTitle.BackgroundTransparency = 1
+KBTitle.Text = "KEYBINDS"; KBTitle.TextColor3 = Themes[Settings.UI_Theme].Accent
+KBTitle.Font = Enum.Font.GothamBold; KBTitle.TextSize = 12; KBTitle.Parent = KeybindOverlay
+
+local KBList = Instance.new("TextLabel")
+KBList.Size = UDim2.new(1, -10, 1, -30); KBList.Position = UDim2.new(0, 5, 0, 25)
+KBList.BackgroundTransparency = 1; KBList.Text = ""
+KBList.TextColor3 = Themes[Settings.UI_Theme].Text; KBList.Font = Enum.Font.Gotham
+KBList.TextSize = 11; KBList.TextXAlignment = Enum.TextXAlignment.Left
+KBList.TextYAlignment = Enum.TextYAlignment.Top; KBList.Parent = KeybindOverlay
+
+local function UpdateKeybindOverlay()
+    if IsMobile then
+        KBList.Text = "Mobile Gestures:\n\nSwipe Up: Aimlock\nSwipe Down: Noclip\nSwipe Left: Radar\nSwipe Right: ESP\nDouble-Tap Left: Hub"
+    else
+        KBList.Text = string.format("F1: Toggle UI\nInsert: Toggle ESP\nRShift: Toggle Aimlock\nF5: Noclip\n\nLock: Hold %s", tostring(Settings.Aimlock_Key):gsub("Enum%.UserInputType%.", ""))
+    end
+end
+UpdateKeybindOverlay()
+
+local KBToggle = Instance.new("TextButton")
+KBToggle.Size = UDim2.new(0, 20, 0, 20); KBToggle.Position = UDim2.new(1, -25, 0, 5)
+KBToggle.BackgroundTransparency = 1; KBToggle.Text = "👁"; KBToggle.TextSize = 12
+KBToggle.Parent = KeybindOverlay
+KBToggle.MouseButton1Click:Connect(function() KBList.Visible = not KBList.Visible end)
+
+-- ============================================
+-- UNIT CONVERSION DROPDOWN
+-- ============================================
+local UnitDropdown = Instance.new("TextButton")
+UnitDropdown.Size = UDim2.new(0, 120, 0, 25); UnitDropdown.Position = UDim2.new(1, -130, 0, 10)
+UnitDropdown.BackgroundColor3 = Themes[Settings.UI_Theme].Bg; UnitDropdown.BackgroundTransparency = 0.5
+UnitDropdown.Text = Settings.Unit_System; UnitDropdown.TextColor3 = Themes[Settings.UI_Theme].Text
+UnitDropdown.Font = Enum.Font.Gotham; UnitDropdown.TextSize = 12; UnitDropdown.Parent = ScreenGui
+local ucorner = Instance.new("UICorner"); ucorner.CornerRadius = UDim.new(0, 6); ucorner.Parent = UnitDropdown
+
+local unitOptions = {"Meters", "Kilometers", "Miles", "Feet"}
+local unitIdx = 1
+UnitDropdown.MouseButton1Click:Connect(function()
+    unitIdx = (unitIdx % #unitOptions) + 1
+    Settings.Unit_System = unitOptions[unitIdx]; UnitDropdown.Text = Settings.Unit_System
+end)
+
+-- ============================================
+-- MOBILE CONTROL PANEL & GESTURES
+-- ============================================
+if IsMobile then
+    local MobilePanel = Instance.new("Frame")
+    MobilePanel.Size = UDim2.new(0, 180, 0, 120); MobilePanel.Position = UDim2.new(0, 10, 1, -130)
+    MobilePanel.BackgroundTransparency = 0.5; MobilePanel.BackgroundColor3 = Themes[Settings.UI_Theme].Bg
+    MobilePanel.Parent = ScreenGui
+    local mcorner = Instance.new("UICorner"); mcorner.CornerRadius = UDim.new(0, 12); mcorner.Parent = MobilePanel
+    local mlayout = Instance.new("UIGridLayout")
+    mlayout.CellSize = UDim2.new(0, 80, 0, 50); mlayout.CellPadding = UDim.new(0, 6, 0, 6); mlayout.Parent = MobilePanel
+    
+    local mobileBtns = {
+        {Text = "👁", Toggle = "ESP"}, {Text = "🎯", Toggle = "Aimlock"}, {Text = "🧭", Toggle = "Radar"},
+        {Text = "👻", Toggle = "Noclip"}, {Text = "⚙️", Toggle = "UI"},
+    }
+    
+    for _, btn in ipairs(mobileBtns) do
+        local b = Instance.new("TextButton"); b.Text = btn.Text; b.TextSize = 24
+        b.BackgroundColor3 = Color3.fromRGB(0, 255, 0); b.Parent = MobilePanel
+        local bc = Instance.new("UICorner"); bc.CornerRadius = UDim.new(0, 8); bc.Parent = b
+        b.MouseButton1Click:Connect(function()
+            if btn.Toggle == "ESP" then
+                Settings.ESP_Enabled = not Settings.ESP_Enabled
+                b.BackgroundColor3 = Settings.ESP_Enabled and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 0, 0)
+            elseif btn.Toggle == "Aimlock" then
+                Settings.Aimlock_Enabled = not Settings.Aimlock_Enabled
+                b.BackgroundColor3 = Settings.Aimlock_Enabled and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 0, 0)
+            elseif btn.Toggle == "Radar" then
+                Settings.Radar_Enabled = not Settings.Radar_Enabled
+                b.BackgroundColor3 = Settings.Radar_Enabled and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 0, 0)
+            elseif btn.Toggle == "Noclip" then
+                Settings.Noclip_Enabled = not Settings.Noclip_Enabled
+                b.BackgroundColor3 = Settings.Noclip_Enabled and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 0, 0)
+            elseif btn.Toggle == "UI" then HubFrame.Visible = not HubFrame.Visible end
+        end)
+    end
+    
+    local touchStartPos, touchStartTime
+    UserInputService.TouchStarted:Connect(function(touch, gameProcessed)
+        if gameProcessed then return end
+        touchStartPos = touch.Position; touchStartTime = os.clock()
+    end)
+    UserInputService.TouchEnded:Connect(function(touch, gameProcessed)
+        if gameProcessed or not touchStartPos then return end
+        local delta = touch.Position - touchStartPos
+        local dt = os.clock() - touchStartTime; local dist = delta.Magnitude
+        if dist > 50 and dt < 0.5 then
+            if math.abs(delta.X) > math.abs(delta.Y) then
+                if delta.X > 0 then Settings.ESP_Enabled = not Settings.ESP_Enabled
+                else Settings.Radar_Enabled = not Settings.Radar_Enabled end
+            else
+                if delta.Y < 0 then Settings.Aimlock_Enabled = not Settings.Aimlock_Enabled
+                else Settings.Noclip_Enabled = not Settings.Noclip_Enabled end
+            end
+        elseif dist < 20 and dt < 0.3 then
+            if touch.Position.X < Camera.ViewportSize.X / 2 then HubFrame.Visible = not HubFrame.Visible end
+        end
+        touchStartPos = nil
+    end)
+end
+
+-- ============================================
+-- HELPERS
+-- ============================================
+local function GetRigType(character)
+    if character:FindFirstChild("LowerTorso") then return "R15" end
+    if character:FindFirstChild("Torso") then return "R6" end
+    return nil
+end
+
+local function GetJoints(character, rigType)
+    local map = {}
+    local parts = (rigType == "R15")
+        and {"Head","UpperTorso","LowerTorso","LeftUpperArm","LeftLowerArm","RightUpperArm","RightLowerArm","LeftUpperLeg","LeftLowerLeg","RightUpperLeg","RightLowerLeg"}
+        or {"Head","Torso","Left Arm","Right Arm","Left Leg","Right Leg"}
+    for _, name in ipairs(parts) do
+        local p = character:FindFirstChild(name)
+        if p and p:IsA("BasePart") then map[name] = p end
+    end
+    return map
+end
+
+local function GetConnections(rigType) return rigType == "R6" and R6Connections or R15Connections end
+
+local function IsEnemy(player)
+    if not LocalPlayer.Team or not player.Team then return true end
+    return LocalPlayer.Team ~= player.Team
+end
+
+local function IsPartVisible(part)
+    local camPos = Camera.CFrame.Position
+    local dist = (part.Position - camPos).Magnitude
+    if dist > 50 then
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        params.FilterDescendantsInstances = { LocalPlayer.Character }
+        params.IgnoreWater = true
+        local result = Workspace:Raycast(camPos, (part.Position - camPos), params)
+        if result and not result.Instance:IsDescendantOf(part.Parent) then
+            if result.Instance.Transparency > 0.5 or result.Instance.CanCollide == false then
+                local newResult = Workspace:Raycast(result.Position, (part.Position - result.Position), params)
+                if newResult and not newResult.Instance:IsDescendantOf(part.Parent) then return false end
+            else return false end
+        end
+    end
+    return true
+end
+
+local function FormatDistance(studs)
+    local meters = studs * 0.28
+    local unit = Settings.Unit_System
+    if unit == "Meters" then
+        if meters < 1000 then return string.format("%dm", math.floor(meters))
+        else return string.format("%.1fkm", meters / 1000) end
+    elseif unit == "Kilometers" then return string.format("%.2fkm", meters / 1000)
+    elseif unit == "Miles" then
+        local miles = meters * 0.000621371
+        if miles < 0.1 then return string.format("%dft", math.floor(meters * 3.28084))
+        else return string.format("%.2fmi", miles) end
+    elseif unit == "Feet" then return string.format("%dft", math.floor(meters * 3.28084)) end
+    return string.format("%dm", math.floor(meters))
+end
+
+-- ============================================
+-- ADVANCED DRONE SCANNING (DEEP NIL SCAN)
+-- ============================================
+local getNil = function(name, class)
+    if getnilinstances then
+        for _, v in next, getnilinstances() do
+            if v.ClassName == class and v.Name == name then return v end
+        end
+    end
+    return nil
+end
+
+local function ScanForDrones()
+    table.clear(DroneCache)
+    if Workspace:FindFirstChild("FPVDrone") and Workspace.FPVDrone:IsA("Model") then
+        local base = Workspace.FPVDrone:FindFirstChild("Base2") or Workspace.FPVDrone:FindFirstChild("Base") or Workspace.FPVDrone.PrimaryPart
+        if base and base:IsA("BasePart") then DroneCache[Workspace.FPVDrone] = base end
+    end
+    local children = Workspace:GetChildren()
+    for i = 1, #children do
+        local obj = children[i]
+        if obj:IsA("Model") and obj.Name == "FPVDrone" and not DroneCache[obj] then
+            local base = obj:FindFirstChild("Base2") or obj:FindFirstChild("Base") or obj.PrimaryPart
+            if base and base:IsA("BasePart") then DroneCache[obj] = base end
+        end
+    end
+    local nilDrone = getNil("FPVDrone", "Model")
+    if nilDrone and not DroneCache[nilDrone] then
+        local base = nilDrone:FindFirstChild("Base2") or nilDrone:FindFirstChild("Base") or nilDrone.PrimaryPart
+        if base and base:IsA("BasePart") then DroneCache[nilDrone] = base end
+    end
+end
+Workspace.DescendantAdded:Connect(function(obj)
+    if obj:IsA("Model") and obj.Name == "FPVDrone" then ScanForDrones() end
+end)
+Workspace.DescendantRemoving:Connect(function(obj)
+    if DroneCache[obj] then DroneCache[obj] = nil end
+end)
+
+-- ============================================
+-- PLAYER CACHE SYSTEM (ANTI-FLICKER)
+-- ============================================
+local function CachePlayerData(player)
+    if PlayerCache[player] then return end
+    PlayerCache[player] = {
+        Player = player,
+        Character = nil,
+        Head = nil,
+        HumanoidRootPart = nil,
+        Humanoid = nil,
+        RigType = nil,
+        Joints = {},
+        Connections = {},
+        IsAlive = false,
+        LastUpdate = 0
+    }
+end
+
+local function UpdatePlayerCache(player)
+    local data = PlayerCache[player]
+    if not data then return end
+    
+    local now = tick()
+    if now - data.LastUpdate < 0.1 then return end
+    data.LastUpdate = now
+
+    local char = Workspace:FindFirstChild(player.Name)
+    if not char or not char:IsA("Model") then
+        char = player.Character
+    end
+
+    data.Character = char
+    data.Head = nil
+    data.HumanoidRootPart = nil
+    data.Humanoid = nil
+    data.RigType = nil
+    data.Joints = {}
+    data.Connections = {}
+    data.IsAlive = false
+
+    if not char then return end
+
+    local head = char:FindFirstChild("Head")
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    local hum = char:FindFirstChildOfClass("Humanoid")
+
+    if head and head:IsA("BasePart") then data.Head = head end
+    if hrp and hrp:IsA("BasePart") then data.HumanoidRootPart = hrp end
+    if hum then
+        data.Humanoid = hum
+        data.IsAlive = hum.Health > 0
+    end
+
+    if data.Head and data.HumanoidRootPart then
+        data.RigType = GetRigType(char)
+        if data.RigType then
+            data.Joints = GetJoints(char, data.RigType)
+            data.Connections = GetConnections(data.RigType)
+        end
+    end
+end
+
+local function RemovePlayerCache(player)
+    PlayerCache[player] = nil
+    if State.currentLockTarget and State.currentLockTarget.Player == player then
+        State.currentLockTarget = nil
+    end
+end
+
+for _, player in ipairs(Players:GetPlayers()) do
+    if player ~= LocalPlayer then
+        CachePlayerData(player)
+        UpdatePlayerCache(player)
+    end
+end
+
+Players.PlayerAdded:Connect(function(player)
+    CachePlayerData(player)
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    RemovePlayerCache(player)
+end)
+
+-- ============================================
+-- NOCLIP (TERRAIN WALK)
+-- ============================================
+local function UpdateNoclip()
+    local char = LocalPlayer.Character
+    if not char then return end
+    
+    -- Only affect collision if the setting is actively toggled on
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") then
+            -- Explicitly ignore Terrain by checking ClassName. 
+            -- Terrain is not a standard "BasePart" in the descendants of the Character model, 
+            -- but this guarantees we never accidentally touch workspace terrain physics.
+            if part.ClassName ~= "Terrain" then
+                part.CanCollide = not Settings.Noclip_Enabled
+            end
+        end
+    end
+end
+
+-- ============================================
+-- RADAR (ANIMATED SWEEP)
+-- ============================================
+local RadarGui = Instance.new("Frame")
+RadarGui.Size = UDim2.new(0, Settings.Radar_Size, 0, Settings.Radar_Size)
+RadarGui.Position = UDim2.new(0, 10, 1, -Settings.Radar_Size - 10)
+RadarGui.Visible = true; RadarGui.Parent = ScreenGui
+RadarGui.BackgroundColor3 = Themes[Settings.UI_Theme].Bg; RadarGui.BackgroundTransparency = 0.5
+RadarGui.ClipsDescendants = true
+local rcorner = Instance.new("UICorner"); rcorner.CornerRadius = UDim.new(0.5, 0); rcorner.Parent = RadarGui
+local rstroke = Instance.new("UIStroke"); rstroke.Color = Themes[Settings.UI_Theme].Accent
+rstroke.Thickness = 2; rstroke.Parent = RadarGui
+
+local SweepContainer = Instance.new("Frame")
+SweepContainer.Size = UDim2.new(1, 0, 1, 0); SweepContainer.BackgroundTransparency = 1; SweepContainer.Parent = RadarGui
+
+local SweepSegments = {}
+for i = 0, 14 do
+    local seg = Instance.new("Frame")
+    seg.Size = UDim2.new(0, 4, 0.5, 0); seg.Position = UDim2.new(0.5, -2, 0.5, 0)
+    seg.AnchorPoint = Vector2.new(0.5, 1); seg.BackgroundColor3 = Themes[Settings.UI_Theme].Accent
+    seg.BackgroundTransparency = 0.2 + (i / 14) * 0.8; seg.BorderSizePixel = 0
+    seg.Parent = SweepContainer; seg.Rotation = -i; SweepSegments[i + 1] = seg
+end
+
+local CenterDot = Instance.new("Frame")
+CenterDot.Size = UDim2.new(0, 6, 0, 6); CenterDot.Position = UDim2.new(0.5, -3, 0.5, -3)
+CenterDot.BackgroundColor3 = Color3.fromRGB(255, 255, 255); CenterDot.ZIndex = 3; CenterDot.Parent = RadarGui
+local cdcorner = Instance.new("UICorner"); cdcorner.CornerRadius = UDim.new(1, 0); cdcorner.Parent = CenterDot
+
+local RadarDots = Instance.new("Frame")
+RadarDots.Size = UDim2.new(1, 0, 1, 0); RadarDots.BackgroundTransparency = 1
+RadarDots.ZIndex = 2; RadarDots.Parent = RadarGui
+
+for _, r in ipairs({0.33, 0.66, 1.0}) do
+    local ring = Instance.new("Frame")
+    ring.Size = UDim2.new(r, 0, r, 0); ring.Position = UDim2.new((1-r)/2, 0, (1-r)/2, 0)
+    ring.BackgroundColor3 = Color3.fromRGB(255, 255, 255); ring.BackgroundTransparency = 0.9
+    ring.BorderSizePixel = 0; ring.ZIndex = 2; ring.Parent = RadarGui
+    local ringc = Instance.new("UICorner"); ringc.CornerRadius = UDim.new(1, 0); ringc.Parent = ring
+end
+
+local function UpdateRadar(dt)
+    if not Settings.Radar_Enabled then RadarGui.Visible = false return end
+    RadarGui.Visible = true
+    State.sweepAngle = (State.sweepAngle + (360 / Settings.Radar_SweepSpeed) * dt) % 360
+    SweepContainer.Rotation = State.sweepAngle
+    
+    for _, child in ipairs(RadarDots:GetChildren()) do child:Destroy() end
+    local camPos = Camera.CFrame.Position
+    local camLook = Camera.CFrame.LookVector
+    local fwd = Vector3.new(camLook.X, 0, camLook.Z)
+    if fwd.Magnitude < 0.001 then fwd = Vector3.new(0, 0, -1) end
+    fwd = fwd.Unit; local right = Vector3.new(fwd.Z, 0, -fwd.X)
+    local scale = (Settings.Radar_Size/2) / Settings.Radar_Radius
+    local center = Vector2.new(Settings.Radar_Size/2, Settings.Radar_Size/2)
+    
+    for _, data in pairs(PlayerCache) do
+        if data.HumanoidRootPart then
+            local rel = data.HumanoidRootPart.Position - camPos; local relXZ = Vector3.new(rel.X, 0, rel.Z)
+            if relXZ.Magnitude <= Settings.Radar_Radius then
+                local x = relXZ:Dot(right); local z = relXZ:Dot(fwd)
+                local px = center.X + x * scale; local py = center.Y - z * scale
+                local dot = Instance.new("Frame")
+                dot.Size = UDim2.new(0, 6, 0, 6); dot.Position = UDim2.new(0, px - 3, 0, py - 3)
+                dot.BackgroundColor3 = IsEnemy(data.Player) and Color3.fromRGB(255, 60, 60) or Color3.fromRGB(0, 255, 0)
+                dot.ZIndex = 2; dot.Parent = RadarDots
+                local dc = Instance.new("UICorner"); dc.CornerRadius = UDim.new(1, 0); dc.Parent = dot
+            end
+        end
+    end
+    
+    for _, base in pairs(DroneCache) do
+        if base and base.Parent then
+            local rel = base.Position - camPos; local relXZ = Vector3.new(rel.X, 0, rel.Z)
+            if relXZ.Magnitude <= Settings.Radar_Radius then
+                local x = relXZ:Dot(right); local z = relXZ:Dot(fwd)
+                local px = center.X + x * scale; local py = center.Y - z * scale
+                local dot = Instance.new("Frame")
+                dot.Size = UDim2.new(0, 5, 0, 5); dot.Position = UDim2.new(0, px - 2, 0, py - 2)
+                dot.BackgroundColor3 = Color3.fromRGB(255, 255, 0); dot.ZIndex = 2; dot.Parent = RadarDots
+                local dc = Instance.new("UICorner"); dc.CornerRadius = UDim.new(1, 0); dc.Parent = dot
+            end
+        end
+    end
+end
+
+-- ============================================
+-- DRONE FORWARD (PREDICTION REMOVED)
+-- ============================================
+local function DrawDroneForward(base, color)
+    local fwd = base.CFrame.LookVector * 6
+    local a, ona = Camera:WorldToViewportPoint(base.Position)
+    local b, onb = Camera:WorldToViewportPoint(base.Position + fwd)
+    if ona and onb and a.Z > 0 and b.Z > 0 then
+        local ln = AcquireLine(); ln.From = Vector2.new(a.X, a.Y); ln.To = Vector2.new(b.X, b.Y)
+        ln.Color = color; ln.Thickness = 2; ln.Visible = true
+    end
+end
+
+-- ============================================
+-- OFFSCREEN ARROW
+-- ============================================
+local function DrawOffscreenArrow(worldPos, color)
+    local camPos = Camera.CFrame.Position
+    local offset = worldPos - camPos
+    local camSpace = Camera.CFrame:VectorToObjectSpace(offset)
+    local sx, sy = camSpace.X, -camSpace.Y
+    local len = math.sqrt(sx*sx + sy*sy)
+    if len < 0.001 then return end
+    local dir = Vector2.new(sx/len, sy/len)
+    local w, h = Camera.ViewportSize.X, Camera.ViewportSize.Y
+    local cx, cy = w/2, h/2; local margin = 50
+    local rx, ry = w/2 - margin, h/2 - margin
+    local scale = 1 / math.max(math.abs(dir.X)/rx, math.abs(dir.Y)/ry, 0.0001)
+    local edge = Vector2.new(cx + dir.X*scale, cy + dir.Y*scale)
+    local tri = AcquireTri(); local tip = edge; local basePt = edge - dir * 14
+    local perp = Vector2.new(-dir.Y, dir.X) * 6
+    tri.PointA = tip; tri.PointB = basePt + perp; tri.PointC = basePt - perp
+    tri.Color = color; tri.Filled = true; tri.Visible = true
+end
+
+-- ============================================
+-- SCREEN BOX COMPUTATION
+-- ============================================
+local function ComputeScreenBox(worldPos, halfExtents)
+    local corners = {
+        worldPos + Vector3.new( halfExtents,  halfExtents, 0), worldPos + Vector3.new( halfExtents, -halfExtents, 0),
+        worldPos + Vector3.new(-halfExtents,  halfExtents, 0), worldPos + Vector3.new(-halfExtents, -halfExtents, 0),
+    }
+    local minX, maxX, minY, maxY = math.huge, -math.huge, math.huge, -math.huge
+    local anyOn = false
+    for _, c in ipairs(corners) do
+        local sp, on = Camera:WorldToViewportPoint(c)
+        if on and sp.Z > 0 then
+            anyOn = true
+            if sp.X < minX then minX = sp.X end; if sp.X > maxX then maxX = sp.X end
+            if sp.Y < minY then minY = sp.Y end; if sp.Y > maxY then maxY = sp.Y end
+        end
+    end
+    return anyOn, minX, maxX, minY, maxY
+end
+
+-- ============================================
+-- TARGET ACQUISITION & AIMLOCK LOGIC
+-- ============================================
+local function GetBestAimPart(data)
+    if not data or not data.Head or not data.HumanoidRootPart then return nil end
+    
+    if Settings.Aimlock_Mode == "Head" then
+        if Settings.Aimlock_WallCheck and not IsPartVisible(data.Head) then return nil end
+        return data.Head
+    else
+        if not Settings.Aimlock_WallCheck or IsPartVisible(data.Head) then return data.Head end
+        if IsPartVisible(data.HumanoidRootPart) then return data.HumanoidRootPart end
+        return nil
+    end
+end
+
+local function GetClosestTarget()
+    local closest, shortest = nil, Settings.Aimlock_FOV
+    local center = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+    
+    for _, data in pairs(PlayerCache) do
+        if data.IsAlive then
+            local aimPart = GetBestAimPart(data)
+            if aimPart then
+                local sp, onScreen = Camera:WorldToViewportPoint(aimPart.Position)
+                if onScreen and sp.Z > 0 then
+                    local dist = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+                    if dist < shortest then
+                        shortest = dist
+                        closest = { Part = aimPart, Player = data.Player, Data = data }
+                    end
+                end
+            end
+        end
+    end
+    
+    if not Settings.Drone_Filter then
+        local camPos = Camera.CFrame.Position
+        local hideDist = Settings.Drone_HideDistance
+        for _, base in pairs(DroneCache) do
+            if base and base.Parent and (camPos - base.Position).Magnitude > hideDist then
+                local sp, onScreen = Camera:WorldToViewportPoint(base.Position)
+                if onScreen and sp.Z > 0 then
+                    local dist = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+                    if dist < shortest then
+                        if not Settings.Aimlock_WallCheck or IsPartVisible(base) then
+                            shortest = dist
+                            closest = { Part = base, Player = nil, Data = nil }
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    return closest
+end
+
+local function GetPredictedPosition(target, cameraPos)
+    if not target or not target.Parent then return nil end
+    local currentPos = target.Position
+    local character = target.Parent
+    local hrp = character and character:FindFirstChild("HumanoidRootPart")
+    local currentVel = hrp and hrp.AssemblyLinearVelocity or target.AssemblyLinearVelocity
+    local currentTime = os.clock()
+    local accel = Vector3.zero
+    
+    local trackingPart = hrp or target
+    if trackingPart ~= TargetHistory.CurrentTarget then
+        TargetHistory.CurrentTarget = trackingPart
+        TargetHistory.LastPos = trackingPart.Position; TargetHistory.LastVel = currentVel
+        TargetHistory.LastAccel = Vector3.zero; TargetHistory.LastTime = currentTime
+    else
+        local dt = currentTime - TargetHistory.LastTime
+        if dt > 0 then
+            local newAccel = (currentVel - TargetHistory.LastVel) / dt
+            accel = TargetHistory.LastAccel:Lerp(newAccel, 0.3)
+        end
+        TargetHistory.LastPos = trackingPart.Position; TargetHistory.LastVel = currentVel
+        TargetHistory.LastAccel = accel; TargetHistory.LastTime = currentTime
+    end
+    
+    local t = 0.15
+    local predictedPos = currentPos + (currentVel * t) + (0.5 * accel * (t * t))
+    return predictedPos
+end
+
+local function UpdateAimlock()
+    if not Settings.Aimlock_Enabled or not State.isLocking then
+        State.currentLockTarget = nil
+        return
+    end
+    
+    if State.currentLockTarget and State.currentLockTarget.Part and State.currentLockTarget.Part.Parent then
+        local sp, onScreen = Camera:WorldToViewportPoint(State.currentLockTarget.Part.Position)
+        local dist = (Vector2.new(sp.X, sp.Y) - Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)).Magnitude
+        if not onScreen or sp.Z <= 0 or dist > Settings.Aimlock_FOV then
+            State.currentLockTarget = nil
+        elseif State.currentLockTarget.Data then
+            local newPart = GetBestAimPart(State.currentLockTarget.Data)
+            if not newPart then
+                State.currentLockTarget = nil
+            else
+                State.currentLockTarget.Part = newPart
+            end
+        end
+    else
+        State.currentLockTarget = nil
+    end
+
+    if not State.currentLockTarget then
+        State.currentLockTarget = GetClosestTarget()
+    end
+
+    if State.currentLockTarget and State.currentLockTarget.Part then
+        local aimPart = State.currentLockTarget.Part
+        local camPos = Camera.CFrame.Position
+        local predictedPos = GetPredictedPosition(aimPart, camPos)
+        
+        if predictedPos then
+            local targetCFrame = CFrame.lookAt(camPos, predictedPos)
+            if Settings.Aimlock_Smoothing > 0 then
+                Camera.CFrame = Camera.CFrame:Lerp(targetCFrame, 1 - Settings.Aimlock_Smoothing)
+            else
+                Camera.CFrame = targetCFrame
+            end
+        end
+    end
+end
+
+-- ============================================
+-- MAIN RENDER LOOP
+-- ============================================
+local lastFrame = os.clock()
+local frameCount = 0
+local FlashState = false
+local cacheUpdateTimer = 0
+
+local function RenderLoop()
+    local now = os.clock()
+    local dt = now - lastFrame
+    lastFrame = now
+    
+    State.fpsCounter += 1
+    if now - State.fpsTime >= 1 then
+        State.fps = State.fpsCounter; State.fpsCounter = 0; State.fpsTime = now
+    end
+    
+    if Settings.UI_PerformanceMode and frameCount % 2 == 0 then
+        frameCount += 1; return
+    end
+    frameCount += 1
+    ReleasePools()
+    
+    cacheUpdateTimer += dt
+    if cacheUpdateTimer > 0.1 then
+        cacheUpdateTimer = 0
+        for player, _ in pairs(PlayerCache) do
+            UpdatePlayerCache(player)
+        end
+    end
+    
+    FlashState = not FlashState
+    local currentDroneColor = FlashState and Color3.fromRGB(255, 0, 0) or Color3.fromRGB(100, 0, 0)
+    local camPos = Camera.CFrame.Position
+    local screenCenter = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+    
+    -- FOV CIRCLE
+    if Settings.Aimlock_Enabled then
+        FOVCircle.Position = screenCenter; FOVCircle.Radius = Settings.Aimlock_FOV
+        FOVCircle.Color = Themes[Settings.UI_Theme].Accent; FOVCircle.Visible = true
+        State.fovAngle = (State.fovAngle + dt * 120) % 360
+        local rad = math.rad(State.fovAngle); local r = Settings.Aimlock_FOV
+        local x1 = screenCenter.X + math.cos(rad) * r; local y1 = screenCenter.Y + math.sin(rad) * r
+        local x2 = screenCenter.X + math.cos(rad + 0.5) * r; local y2 = screenCenter.Y + math.sin(rad + 0.5) * r
+        FOVDash1.From = Vector2.new(x1, y1); FOVDash1.To = Vector2.new(x2, y2); FOVDash1.Visible = true
+        local rad2 = math.rad(State.fovAngle + 180)
+        local x3 = screenCenter.X + math.cos(rad2) * r; local y3 = screenCenter.Y + math.sin(rad2) * r
+        local x4 = screenCenter.X + math.cos(rad2 + 0.5) * r; local y4 = screenCenter.Y + math.sin(rad2 + 0.5) * r
+        FOVDash2.From = Vector2.new(x3, y3); FOVDash2.To = Vector2.new(x4, y4); FOVDash2.Visible = true
+    else
+        FOVCircle.Visible = false; FOVDash1.Visible = false; FOVDash2.Visible = false
+    end
+    
+    -- CUSTOM CURSOR
+    if Settings.Cursor_Enabled then
+        State.cursorAngle = (State.cursorAngle + (360 / Settings.Cursor_SpinSpeed) * dt) % 360
+        local mp = UserInputService:GetMouseLocation()
+        CursorCircle.Position = mp; CursorCircle.Visible = true
+        for i = 1, 4 do
+            local angle = math.rad(State.cursorAngle + (i - 1) * 90)
+            local innerR = 4; local outerR = 12
+            local x1 = mp.X + math.cos(angle) * innerR; local y1 = mp.Y + math.sin(angle) * innerR
+            local x2 = mp.X + math.cos(angle) * outerR; local y2 = mp.Y + math.sin(angle) * outerR
+            CursorArms[i].From = Vector2.new(x1, y1); CursorArms[i].To = Vector2.new(x2, y2)
+            CursorArms[i].Visible = true
+        end
+    else
+        CursorCircle.Visible = false
+        for _, arm in ipairs(CursorArms) do arm.Visible = false end
+    end
+    
+    -- PLAYER ESP
+    if Settings.ESP_Enabled then
+        for _, data in pairs(PlayerCache) do
+            if data.IsAlive and data.HumanoidRootPart then
+                local hrp = data.HumanoidRootPart
+                local hum = data.Humanoid
+                local dist = (camPos - hrp.Position).Magnitude
+                local visible = IsPartVisible(hrp)
+                local baseColor = visible and (IsEnemy(data.Player) and Color3.fromRGB(255, 60, 60) or Color3.fromRGB(0, 255, 0)) or Color3.fromRGB(255, 165, 0)
+                
+                if data.RigType then
+                    if Settings.Skeleton_Enabled then
+                        for _, conn in ipairs(data.Connections) do
+                            local partA = data.Joints[conn[1]]
+                            local partB = data.Joints[conn[2]]
+                            if partA and partB then
+                                local spA, onA = Camera:WorldToViewportPoint(partA.Position)
+                                local spB, onB = Camera:WorldToViewportPoint(partB.Position)
+                                if (onA or onB) and spA.Z > 0 and spB.Z > 0 then
+                                    local ln = AcquireLine()
+                                    ln.From = Vector2.new(spA.X, spA.Y); ln.To = Vector2.new(spB.X, spB.Y)
+                                    ln.Color = Settings.Skeleton_Color; ln.Thickness = 1; ln.Visible = true
+                                end
+                            end
+                        end
+                    end
+                end
+                
+                local anyOn, minX, maxX, minY, maxY = ComputeScreenBox(hrp.Position, 3)
+                if anyOn and maxX > minX and maxY > minY then
+                    local tl = Vector2.new(minX, minY); local br = Vector2.new(maxX, maxY)
+                    local tr = Vector2.new(br.X, tl.Y); local bl = Vector2.new(tl.X, br.Y)
+                    
+                    if Settings.Box_Enabled then
+                        local l1 = AcquireLine(); l1.From = tl; l1.To = tr; l1.Color = Settings.Box_Color; l1.Thickness = Settings.Box_Thickness; l1.Visible = true
+                        local l2 = AcquireLine(); l2.From = bl; l2.To = br; l2.Color = Settings.Box_Color; l2.Thickness = Settings.Box_Thickness; l2.Visible = true
+                        local l3 = AcquireLine(); l3.From = tl; l3.To = bl; l3.Color = Settings.Box_Color; l3.Thickness = Settings.Box_Thickness; l3.Visible = true
+                        local l4 = AcquireLine(); l4.From = tr; l4.To = br; l4.Color = Settings.Box_Color; l4.Thickness = Settings.Box_Thickness; l4.Visible = true
+                    end
+                    
+                    if Settings.Tracer_Enabled then
+                        local ln = AcquireLine(); ln.From = screenCenter; ln.To = Vector2.new((tl.X + br.X)/2, br.Y)
+                        ln.Color = Settings.Tracer_Color; ln.Thickness = 1; ln.Visible = true
+                    end
+                    
+                    if Settings.Distance_Enabled then
+                        local txt = AcquireText(); txt.Text = FormatDistance(dist)
+                        txt.Position = Vector2.new(tl.X, tl.Y - 16); txt.Color = baseColor; txt.Visible = true
+                    end
+                    
+                    local ntxt = AcquireText(); ntxt.Text = data.Player.Name
+                    ntxt.Position = Vector2.new(tl.X, tl.Y - 32); ntxt.Color = baseColor; ntxt.Visible = true
+                    
+                    if Settings.HealthBar_Enabled and hum then
+                        local barH = (maxY - minY)
+                        local barX = tl.X - 6
+                        local barTop = tl.Y
+                        
+                        local bgLn = AcquireLine(); bgLn.From = Vector2.new(barX, barTop); bgLn.To = Vector2.new(barX, br.Y)
+                        bgLn.Color = Color3.fromRGB(40, 40, 40); bgLn.Thickness = 4; bgLn.Visible = true
+                        
+                        local hpPct = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
+                        local hpColor = hpPct > 0.5 and Color3.fromRGB(0, 255, 0) or (hpPct > 0.2 and Color3.fromRGB(255, 165, 0) or Color3.fromRGB(255, 0, 0))
+                        local hpEndY = barTop + barH * (1 - hpPct)
+                        local hpLn = AcquireLine(); hpLn.From = Vector2.new(barX, barTop); hpLn.To = Vector2.new(barX, hpEndY)
+                        hpLn.Color = hpColor; hpLn.Thickness = 2; hpLn.Visible = true
+                    end
+                    
+                    if Settings.HealthText_Enabled and hum then
+                        local htxt = AcquireText(); htxt.Text = string.format("%d/%d", math.floor(hum.Health), math.floor(hum.MaxHealth))
+                        htxt.Position = Vector2.new(br.X + 4, tl.Y); htxt.Color = Color3.fromRGB(255, 255, 255); htxt.Visible = true
+                    end
+                else
+                    DrawOffscreenArrow(hrp.Position, baseColor)
+                end
+            end
+        end
+    end
+    
+    -- DRONE ESP
+    if not Settings.Drone_Filter then
+        local hideDist = Settings.Drone_HideDistance
+        for droneModel, base2 in pairs(DroneCache) do
+            if base2 and base2.Parent then
+                if (camPos - base2.Position).Magnitude > hideDist then
+                    local cf = base2.CFrame
+                    local size = base2.Size
+                    
+                    local corners = {
+                        cf * Vector3.new(size.X/2, size.Y/2, size.Z/2), cf * Vector3.new(size.X/2, size.Y/2, -size.Z/2),
+                        cf * Vector3.new(size.X/2, -size.Y/2, size.Z/2), cf * Vector3.new(size.X/2, -size.Y/2, -size.Z/2),
+                        cf * Vector3.new(-size.X/2, size.Y/2, size.Z/2), cf * Vector3.new(-size.X/2, size.Y/2, -size.Z/2),
+                        cf * Vector3.new(-size.X/2, -size.Y/2, size.Z/2), cf * Vector3.new(-size.X/2, -size.Y/2, -size.Z/2),
+                    }
+                    
+                    local minX, maxX = math.huge, -math.huge
+                    local minY, maxY = math.huge, -math.huge
+                    local onScreen = false
+                    
+                    for _, c in ipairs(corners) do
+                        local sp, os = Camera:WorldToViewportPoint(c)
+                        if os and sp.Z > 0 then
+                            onScreen = true
+                            if sp.X < minX then minX = sp.X end; if sp.X > maxX then maxX = sp.X end
+                            if sp.Y < minY then minY = sp.Y end; if sp.Y > maxY then maxY = sp.Y end
+                        end
+                    end
+                    
+                    if onScreen and maxX > minX and maxY > minY then
+                        local tl = Vector2.new(minX, minY)
+                        local br = Vector2.new(maxX, maxY)
+                        local tr = Vector2.new(br.X, tl.Y)
+                        local bl = Vector2.new(tl.X, br.Y)
+                        
+                        local l1 = AcquireLine(); l1.From = tl; l1.To = tr; l1.Color = currentDroneColor; l1.Thickness = 2; l1.Visible = true
+                        local l2 = AcquireLine(); l2.From = bl; l2.To = br; l2.Color = currentDroneColor; l2.Thickness = 2; l2.Visible = true
+                        local l3 = AcquireLine(); l3.From = tl; l3.To = bl; l3.Color = currentDroneColor; l3.Thickness = 2; l3.Visible = true
+                        local l4 = AcquireLine(); l4.From = tr; l4.To = br; l4.Color = currentDroneColor; l1.Thickness = 2; l4.Visible = true
+                        
+                        local dtxt = AcquireText(); dtxt.Text = "DRONE"
+                        dtxt.Position = Vector2.new(tl.X, tl.Y - 16); dtxt.Color = currentDroneColor; dtxt.Visible = true
+                        
+                        local ddist = (camPos - base2.Position).Magnitude
+                        local ddtxt = AcquireText(); ddtxt.Text = FormatDistance(ddist)
+                        ddtxt.Position = Vector2.new(tl.X, tl.Y - 32); ddtxt.Color = currentDroneColor; ddtxt.Visible = true
+                        
+                        DrawDroneForward(base2, currentDroneColor)
+                    else
+                        DrawOffscreenArrow(base2.Position, currentDroneColor)
+                    end
+                end
+            end
+        end
+    end
+    
+    -- AIMLOCK
+    UpdateAimlock()
+    
+    -- NOCLIP
+    UpdateNoclip()
+    
+    -- RADAR
+    UpdateRadar(dt)
+    
+    -- STATUS TEXT
+    StatusText.Text = string.format("BREAD v10.5.0 | FPS: %d | Targets: %d | Drones: %d", State.fps, #PlayerCache, #DroneCache)
+end
+
+-- ============================================
+-- INPUT HANDLING
+-- ============================================
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.UserInputType == Settings.Aimlock_Key then
+        State.isLocking = true
+    elseif input.KeyCode == Settings.Keybinds.ToggleUI then
+        HubFrame.Visible = not HubFrame.Visible
+    elseif input.KeyCode == Settings.Keybinds.ToggleESP then
+        Settings.ESP_Enabled = not Settings.ESP_Enabled
+    elseif input.KeyCode == Settings.Keybinds.ToggleAimlock then
+        Settings.Aimlock_Enabled = not Settings.Aimlock_Enabled
+    elseif input.KeyCode == Settings.Keybinds.ToggleNoclip then
+        Settings.Noclip_Enabled = not Settings.Noclip_Enabled
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input, gameProcessed)
+    if input.UserInputType == Settings.Aimlock_Key then
+        State.isLocking = false
+        State.currentLockTarget = nil
+    end
+end)
+
+-- ============================================
+-- INIT
+-- ============================================
+ScanForDrones()
+task.spawn(function()
+    while task.wait(0.5) do ScanForDrones() end
+end)
+
+RunService:BindToRenderStep("AeroStrikeRender", Enum.RenderPriority.Camera.Value + 1, RenderLoop)
+
+script.Destroying:Connect(function()
+    RunService:UnbindFromRenderStep("AeroStrikeRender")
+    ReleasePools()
+    for _, line in ipairs(ObjectLinePool) do line:Remove() end
+    table.clear(ObjectLinePool)
+    for _, tri in ipairs(ObjectTriPool) do tri:Remove() end
+    table.clear(ObjectTriPool)
+    for _, txt in ipairs(ObjectTextPool) do txt:Remove() end
+    table.clear(ObjectTextPool)
+    StatusText:Remove()
+    FOVCircle:Remove(); FOVDash1:Remove(); FOVDash2:Remove()
+    CursorCircle:Remove()
+    for _, arm in ipairs(CursorArms) do arm:Remove() end
+    ScreenGui:Destroy()
+end)
