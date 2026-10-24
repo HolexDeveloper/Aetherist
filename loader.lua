@@ -38,6 +38,11 @@ local Monochrome_Script = [[
 loadstring(game:HttpGet("https://raw.githubusercontent.com/HolexDeveloper/Aetherist/refs/heads/main/Scripts/monochrome.lua", true))()
 ]]
 
+-- Demon Arena script: runs only inside Demon Arena
+local Demon_Arena_Script = [[
+loadstring(game:HttpGet("https://raw.githubusercontent.com/HolexDeveloper/Aetherist/refs/heads/main/Scripts/DemonArena.lua", true))()
+]]
+
 -- =====================================================================
 -- LOCAL LIBRARY OF SUPPORTED GAMES
 -- =====================================================================
@@ -61,6 +66,11 @@ local CONFIG = {
         title  = "Monochrome",
         page   = "https://www.roblox.com/games/134208374070897/MONOCHROME",
         script = Monochrome_Script,
+    },
+    [117630053494430] = { -- Demon Arena
+        title  = "Demon Arena",
+        page   = "https://www.roblox.com/games/117630053494430/Demon-Arena",
+        script = Demon_Arena_Script,
     },
 }
 
