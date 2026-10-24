@@ -1,18 +1,18 @@
 -- ============================================
--- AETHERIST / DEMON ARENA - PATHFIND EDITION
--- Stripped UI, 30 WalkSpeed, SoundService Muted, Noclip OFF
+-- AETHERIST / DEMON ARENA - TWEEN AFK EDITION
+-- Tweening, 3D Render Toggle, Silent Anti-AFK
 -- ============================================
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local PathfindingService = game:GetService("PathfindingService")
-local SoundService = game:GetService("SoundService")
+local TweenService = game:GetService("TweenService")
+local VirtualUser = game:GetService("VirtualUser")
 
 local LocalPlayer = Players.LocalPlayer
 
 -- Singleton Management
 local genv = getgenv and getgenv() or _G
-local SCRIPT_KEY = "Aetherist_Pathfind_V1"
+local SCRIPT_KEY = "Aetherist_TweenAFK_V1"
 
 if genv[SCRIPT_KEY] then
     local old = genv[SCRIPT_KEY]
@@ -50,12 +50,17 @@ function Script:Cleanup()
     table.clear(self.Connections)
     table.clear(self.Threads)
     genv[SCRIPT_KEY] = nil
+    
+    -- Restore 3D rendering on cleanup
+    pcall(function() RunService:Set3dRenderingEnabled(true) end)
 end
 
 -- State
 local State = {
     AutoFarmActive = false,
     SelectedTarget = "Nearest Honor Ball",
+    Disable3DRendering = false,
+    SilentAntiAFK = false,
     HonorFarmed = 0,
 }
 
@@ -88,69 +93,33 @@ local function isInSafeZone(obj)
     return false
 end
 
--- Mute SoundService Aggressively
-local function muteAllSounds()
-    for _, sound in pairs(SoundService:GetDescendants()) do
-        if sound:IsA("Sound") then
-            sound.Volume = 0
-            sound.Playing = false
-        end
-    end
-    Script:TrackConnection(SoundService.DescendantAdded:Connect(function(desc)
-        if desc:IsA("Sound") then
-            desc.Volume = 0
-            desc.Playing = false
-        end
-    end))
-end
-muteAllSounds()
-
--- Pathfinding Logic (30 WalkSpeed, Noclip OFF)
-local function pathfindTo(targetPos)
+-- Tween Logic (Noclip OFF, prevents floor clipping with Y offset)
+local function tweenTo(targetPos)
     local hrp = getHRP()
     local hum = getHumanoid()
     if not hrp or not hum then return false end
     
-    -- Force walkspeed, ensure noclip is OFF (CanCollide remains true)
+    -- Force walkspeed context, ensure Noclip is strictly OFF
     hum.WalkSpeed = 30
-    
     local char = getCharacter()
     if char then
         for _, part in pairs(char:GetDescendants()) do
             if part:IsA("BasePart") then
-                part.CanCollide = true -- Explicitly disable noclip
+                part.CanCollide = true -- Noclip OFF
             end
         end
     end
     
-    local path = PathfindingService:CreatePath({
-        AgentRadius = 2,
-        AgentHeight = 5,
-        AgentCanJump = true
-    })
+    -- Add slight Y offset to prevent floor clipping during tween
+    local safeTargetPos = Vector3.new(targetPos.X, targetPos.Y + 3, targetPos.Z)
+    local targetCFrame = CFrame.new(safeTargetPos)
     
-    local success = pcall(function()
-        path:ComputeAsync(hrp.Position, targetPos)
-    end)
+    local tweenInfo = TweenInfo.new(2.5, Enum.EasingStyle.Linear, Enum.EasingDirection.Out)
+    local tween = TweenService:Create(hrp, tweenInfo, {CFrame = targetCFrame})
     
-    if success and path.Status == Enum.PathStatus.Success then
-        for _, waypoint in pairs(path:GetWaypoints()) do
-            if not State.AutoFarmActive then return false end
-            hum:MoveTo(waypoint.Position)
-            
-            -- Prevent hanging on obstacles
-            local reached = hum.MoveToFinished:Wait(2)
-            if not reached then
-                hum.Jump = true
-                task.wait(0.5)
-            end
-        end
-        return true
-    else
-        -- Fallback direct move if pathfinding fails
-        hum:MoveTo(targetPos)
-        return true
-    end
+    tween:Play()
+    tween.Completed:Wait()
+    return true
 end
 
 local function findNearestHonorBall()
@@ -174,6 +143,27 @@ local function findNearestHonorBall()
     return nearestBall
 end
 
+-- Silent Anti-AFK Thread
+local antiAfkThread = nil
+local function toggleSilentAntiAFK(state)
+    if state then
+        antiAfkThread = Script:TrackThread(task.spawn(function()
+            while State.SilentAntiAFK and Script.Active do
+                pcall(function()
+                    VirtualUser:CaptureController()
+                    VirtualUser:ClickButton2(Vector2.new(0, 0))
+                end)
+                task.wait(120) -- Trigger every 2 minutes
+            end
+        end))
+    else
+        if antiAfkThread then
+            pcall(task.cancel, antiAfkThread)
+            antiAfkThread = nil
+        end
+    end
+end
+
 -- Main Farm Loop
 Script:TrackThread(task.spawn(function()
     while Script.Active do
@@ -188,15 +178,14 @@ Script:TrackThread(task.spawn(function()
                 else
                     local ball = findNearestHonorBall()
                     if ball then
-                        targetPos = ball.Position + Vector3.new(0, 3, 0)
+                        targetPos = ball.Position
                     end
                 end
                 
                 if targetPos then
-                    local success = pathfindTo(targetPos)
+                    local success = tweenTo(targetPos)
                     if success and State.SelectedTarget == "Nearest Honor Ball" then
                         task.wait(0.2)
-                        -- Simple interaction trigger upon arrival
                         local hrp = getHRP()
                         if hrp then
                             for _, v in pairs(workspace:GetDescendants()) do
@@ -221,7 +210,7 @@ local Rayfield = loadstring(game:HttpGet("https://raw.githubusercontent.com/Sync
 
 local Window = Rayfield:CreateWindow({
     name = "Aetherist / Demon Arena",
-    subtitle = "Pathfind Edition",
+    subtitle = "Tween AFK Edition",
     icon = "bot",
     theme = "default",
     configuration = {
@@ -246,24 +235,50 @@ AutofarmTab:CreateDropdown({
 })
 
 AutofarmTab:CreateToggle({
-    name = "Activate Autofarm (WalkSpeed 30)",
+    name = "Activate Autofarm (Tween)",
     value = false,
     flag = "AutoFarmActive",
-    description = "Uses PathfindingService. Noclip is OFF. SoundService is muted.",
+    description = "Smooth tweens to target. Noclip is OFF. Sounds remain active.",
     callback = function(value)
         State.AutoFarmActive = value
         if not value then
             local hum = getHumanoid()
-            if hum then hum.WalkSpeed = 16 end -- Reset on disable
+            if hum then hum.WalkSpeed = 16 end
         end
+    end,
+})
+
+AutofarmTab:CreateSection({ name = "AFK Utilities" })
+
+AutofarmTab:CreateToggle({
+    name = "Disable 3D Rendering",
+    value = false,
+    flag = "Disable3DRendering",
+    description = "Drops FPS to near zero for ultimate AFK performance. Re-enables on disable.",
+    callback = function(value)
+        State.Disable3DRendering = value
+        pcall(function()
+            RunService:Set3dRenderingEnabled(not value)
+        end)
+    end,
+})
+
+AutofarmTab:CreateToggle({
+    name = "Silent Anti-AFK",
+    value = false,
+    flag = "SilentAntiAFK",
+    description = "Silently prevents Roblox idle disconnects in the background.",
+    callback = function(value)
+        State.SilentAntiAFK = value
+        toggleSilentAntiAFK(value)
     end,
 })
 
 Window:Notify({
     title = "4080 Initialized",
-    content = "Stripped UI. Pathfinding active. Sound muted.",
+    content = "Tweening active. 3D render toggle ready. Anti-AFK silent.",
     duration = 4,
     icon = "bot",
 })
 
-print("[Aetherist] Pathfind Edition loaded. Noclip OFF. SoundService muted.")
+print("[Aetherist] Tween AFK Edition loaded. Noclip OFF. Sounds intact.")
