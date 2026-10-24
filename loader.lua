@@ -75,24 +75,27 @@ local CONFIG = {
 }
 
 -- =====================================================================
--- WAIT FOR GAME TO LOAD / DETECT LOCAL PLAYER
+-- WAIT FOR GAME TO LOAD / DETECT LOCAL PLAYER & PLACE ID
 -- =====================================================================
-repeat
-    task.wait()
-until game:IsLoaded()
-
 local Players = game:GetService("Players")
-local LocalPlayer = Players.LocalPlayer
 
+-- 1. Robustly wait for LocalPlayer to exist
+local LocalPlayer = Players.LocalPlayer
 if not LocalPlayer then
-    warn("[Aetherist] LocalPlayer not found, cannot continue.")
-    return
+    print("[Aetherist] Waiting for LocalPlayer...")
+    LocalPlayer = Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
 end
 
--- Use game.PlaceId, NOT game.GameId (which often returns the Universe ID)
-local currentPlaceId = game.PlaceId
+-- 2. Robustly wait for game to load AND PlaceId to be valid (not 0)
+-- Some executors report PlaceId as 0 briefly before it updates to the real ID.
+repeat
+    task.wait(0.1)
+until game:IsLoaded() and game.PlaceId ~= 0
 
-print(("[Aetherist] Loaded. PlaceId: %d | Player: %s"):format(currentPlaceId, LocalPlayer.Name))
+-- 3. Ensure it's a number to prevent any weird type mismatches in CONFIG lookup
+local currentPlaceId = tonumber(game.PlaceId)
+
+print(("[Aetherist] Environment Ready. PlaceId: %d | Player: %s"):format(currentPlaceId, LocalPlayer.Name))
 
 -- =====================================================================
 -- RESOLVE SCRIPT (game-specific or local Universal fallback)
@@ -101,10 +104,10 @@ local data = CONFIG[currentPlaceId]
 local scriptSource
 
 if data then
-    print(("Aetherist | Supported game detected: %s"):format(tostring(data.title)))
+    print(("[Aetherist] ✅ Supported game detected: %s (PlaceId: %d)"):format(data.title, currentPlaceId))
     scriptSource = data.script
 else
-    print("Aetherist | Unsupported game, running local Universal_Script...")
+    print(("[Aetherist] ⚠️ Unsupported game (PlaceId: %d). Running local Universal_Script fallback..."):format(currentPlaceId))
     scriptSource = Universal_Script
 end
 
@@ -114,11 +117,11 @@ end
 local ok, err = pcall(function()
     local chunk = loadstring(scriptSource)
     if type(chunk) ~= "function" then
-        error("loadstring did not return a function")
+        error("loadstring did not return a function. Chunk: " .. tostring(chunk))
     end
     chunk()
 end)
 
 if not ok then
-    warn("[Aetherist] Failed to run script: " .. tostring(err))
+    warn("[Aetherist] ❌ Failed to run script: " .. tostring(err))
 end
