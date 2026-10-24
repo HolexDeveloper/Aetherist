@@ -45,6 +45,7 @@ local Settings = {
         Smoothness = 30,
         TargetPart = "Head",
         WallCheck = true,
+        Prediction = 0.165,
     },
     Performance = {
         Ping = 0,
@@ -294,7 +295,6 @@ local function UpdateAimbot(dt)
         end
     end
 
-    -- Hardwired Right Mouse Button check
     local isAiming = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
 
     if Settings.Aimbot.Enabled and isAiming then
@@ -303,7 +303,7 @@ local function UpdateAimbot(dt)
             local targetPos = targetPart.Position
             
             local vel = targetPart.AssemblyLinearVelocity or targetPart.Velocity
-            targetPos = targetPos + vel * dt * 0.15
+            targetPos = targetPos + vel * Settings.Aimbot.Prediction
             
             local currentCF = Camera.CFrame
             local targetCF = CFrame.lookAt(currentCF.Position, targetPos)
@@ -401,6 +401,16 @@ HomeTab:CreateSlider({
     Callback = function(v) Settings.Aimbot.Smoothness = v end,
 })
 
+HomeTab:CreateSlider({
+    Name = "Prediction Factor",
+    Range = {0, 500},
+    Increment = 5,
+    Suffix = "ms",
+    CurrentValue = math.floor(Settings.Aimbot.Prediction * 1000),
+    Flag = "AimbotPrediction",
+    Callback = function(v) Settings.Aimbot.Prediction = v / 1000 end,
+})
+
 HomeTab:CreateDropdown({
     Name = "Target Part",
     Options = {"Head", "HumanoidRootPart", "UpperTorso"},
@@ -494,7 +504,7 @@ end)
 
 Rayfield:Notify({
     Title = "Entrenched v1.1",
-    Content = "Rayfield Gen2 loaded. Hardwired RMB lock active.",
+    Content = "Rayfield Gen2 loaded. Predictive RMB lock active.",
     Duration = 5,
     Image = "crosshair",
 })
