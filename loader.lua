@@ -28,6 +28,11 @@ local FPV_Drone_Battlefield_Script = [[
 loadstring(game:HttpGet("https://raw.githubusercontent.com/HolexDeveloper/Aetherist/refs/heads/main/Scripts/FPVdronebattlefield.txt", true))()
 ]]
 
+-- House of the Locust script: runs only inside House of the Locust
+local House_of_the_Locust_Script = [[
+loadstring(game:HttpGet("https://raw.githubusercontent.com/HolexDeveloper/Aetherist/refs/heads/main/Scripts/Houseofthelocust.lua", true))()
+]]
+
 -- =====================================================================
 -- LOCAL LIBRARY OF SUPPORTED GAMES
 -- =====================================================================
@@ -41,6 +46,11 @@ local CONFIG = {
         title  = "FPV Drone Battlefield",
         page   = "https://www.roblox.com/games/100661692738190/FPV-Drone-Battlefield",
         script = FPV_Drone_Battlefield_Script,
+    },
+    [86247128610772] = { -- House of the Locust
+        title  = "House of the Locust",
+        page   = "https://www.roblox.com/games/86247128610772/House-of-the-Locust",
+        script = House_of_the_Locust_Script,
     },
 }
 
