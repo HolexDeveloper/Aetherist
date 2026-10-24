@@ -33,6 +33,11 @@ local House_of_the_Locust_Script = [[
 loadstring(game:HttpGet("https://raw.githubusercontent.com/HolexDeveloper/Aetherist/refs/heads/main/Scripts/Houseofthelocust.lua", true))()
 ]]
 
+-- Monochrome script: runs only inside Monochrome
+local Monochrome_Script = [[
+loadstring(game:HttpGet("https://raw.githubusercontent.com/HolexDeveloper/Aetherist/refs/heads/main/Scripts/monochrome.lua", true))()
+]]
+
 -- =====================================================================
 -- LOCAL LIBRARY OF SUPPORTED GAMES
 -- =====================================================================
@@ -51,6 +56,11 @@ local CONFIG = {
         title  = "House of the Locust",
         page   = "https://www.roblox.com/games/86247128610772/House-of-the-Locust",
         script = House_of_the_Locust_Script,
+    },
+    [134208374070897] = { -- Monochrome
+        title  = "Monochrome",
+        page   = "https://www.roblox.com/games/134208374070897/MONOCHROME",
+        script = Monochrome_Script,
     },
 }
 
