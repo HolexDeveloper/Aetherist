@@ -31,12 +31,8 @@ local Settings = {
     ESP = {
         Enabled = true,
         TeamCheck = true,
-        Boxes = true,
-        Names = true,
-        Health = true,
-        Distance = true,
-        Tracers = true,
         Color = "Red",
+        FillTransparency = 0.5,
     },
     Aimbot = {
         Enabled = false,
@@ -50,7 +46,6 @@ local Settings = {
     Performance = {
         Ping = 0,
         FPS = 0,
-        Kills = 0,
         Targets = 0,
     },
     History = {
@@ -72,161 +67,66 @@ raycastParams.IgnoreWater = true
 
 local function CreateESP(player)
     if player == LocalPlayer then return end
-    
+
     local char = player.Character or player.CharacterAdded:Wait()
-    local hrp = char:WaitForChild("HumanoidRootPart", 5)
-    if not hrp then return end
+    if not char then return end
 
     local highlight = Instance.new("Highlight")
     highlight.Name = "Suite_HL"
     highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-    highlight.FillTransparency = 0.5
+    highlight.FillTransparency = Settings.ESP.FillTransparency
     highlight.OutlineTransparency = 0
     highlight.Adornee = char
     highlight.Parent = char
-    
-    local billboard = Instance.new("BillboardGui")
-    billboard.Name = "Suite_BB"
-    billboard.Size = UDim2.new(0, 100, 0, 50)
-    billboard.StudsOffset = Vector3.new(0, 3, 0)
-    billboard.AlwaysOnTop = true
-    billboard.Adornee = hrp
-    billboard.Parent = hrp
-    
-    local nameLabel = Instance.new("TextLabel")
-    nameLabel.Name = "Name"
-    nameLabel.Size = UDim2.new(1, 0, 0, 20)
-    nameLabel.BackgroundTransparency = 1
-    nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-    nameLabel.TextStrokeTransparency = 0
-    nameLabel.Font = Enum.Font.GothamBold
-    nameLabel.TextSize = 14
-    nameLabel.Parent = billboard
-    
-    local healthLabel = Instance.new("TextLabel")
-    healthLabel.Name = "Health"
-    healthLabel.Position = UDim2.new(0, 0, 0, 20)
-    healthLabel.Size = UDim2.new(1, 0, 0, 15)
-    healthLabel.BackgroundTransparency = 1
-    healthLabel.TextColor3 = Color3.fromRGB(0, 255, 0)
-    healthLabel.TextStrokeTransparency = 0
-    healthLabel.Font = Enum.Font.Gotham
-    healthLabel.TextSize = 12
-    healthLabel.Parent = billboard
-
-    local distLabel = Instance.new("TextLabel")
-    distLabel.Name = "Dist"
-    distLabel.Position = UDim2.new(0, 0, 0, 35)
-    distLabel.Size = UDim2.new(1, 0, 0, 15)
-    distLabel.BackgroundTransparency = 1
-    distLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-    distLabel.TextStrokeTransparency = 0
-    distLabel.Font = Enum.Font.Gotham
-    distLabel.TextSize = 12
-    distLabel.Parent = billboard
-
-    local tracer = nil
-    if DrawingEnabled then
-        tracer = Drawing.new("Line")
-        tracer.Thickness = 1.5
-        tracer.Color = colorMap[Settings.ESP.Color]
-    end
 
     ESP_Objects[player] = {
         Highlight = highlight,
-        Billboard = billboard,
-        NameLabel = nameLabel,
-        HealthLabel = healthLabel,
-        DistLabel = distLabel,
-        Tracer = tracer,
         Connections = {}
     }
-    
+
     ESP_Objects[player].Connections.CharAdded = player.CharacterAdded:Connect(function(newChar)
         task.wait(0.5)
-        local newHrp = newChar:WaitForChild("HumanoidRootPart", 5)
-        if newHrp and ESP_Objects[player] then
+        if newChar and ESP_Objects[player] then
             ESP_Objects[player].Highlight.Adornee = newChar
             ESP_Objects[player].Highlight.Parent = newChar
-            ESP_Objects[player].Billboard.Adornee = newHrp
-            ESP_Objects[player].Billboard.Parent = newHrp
         end
     end)
 end
 
-local function UpdateESP(dt)
+local function UpdateESP()
     local activeTargets = 0
     local closestDist = 9999
-    
+
     for player, obj in pairs(ESP_Objects) do
         pcall(function()
             local char = player.Character
-            local root = char and char:FindFirstChild("HumanoidRootPart")
             local hum = char and char:FindFirstChild("Humanoid")
-            
+            local root = char and char:FindFirstChild("HumanoidRootPart")
+
             local isEnemy = true
             if Settings.ESP.TeamCheck and player.Team == LocalPlayer.Team then
                 isEnemy = false
             end
 
-            if not Settings.ESP.Enabled or not isEnemy or not root or not hum or hum.Health <= 0 then
-                if obj.Highlight then obj.Highlight.Enabled = false end
-                if obj.Billboard then obj.Billboard.Enabled = false end
-                if obj.Tracer then obj.Tracer.Visible = false end
-                return
-            end
-            
-            activeTargets = activeTargets + 1
-            local pos, onScreen = Camera:WorldToViewportPoint(root.Position)
-            local dist = (root.Position - Camera.CFrame.Position).Magnitude
-            if dist < closestDist then closestDist = dist end
+            local alive = char and hum and hum.Health > 0
+            local visible = Settings.ESP.Enabled and isEnemy and alive
 
-            if obj.Highlight then
-                obj.Highlight.Enabled = Settings.ESP.Boxes
-                local c = colorMap[Settings.ESP.Color] or Color3.fromRGB(255,0,0)
+            obj.Highlight.Enabled = visible
+            if visible then
+                local c = colorMap[Settings.ESP.Color] or Color3.fromRGB(255, 0, 0)
                 obj.Highlight.FillColor = c
                 obj.Highlight.OutlineColor = c
-            end
-            
-            if obj.Billboard then
-                obj.Billboard.Enabled = Settings.ESP.Names or Settings.ESP.Health or Settings.ESP.Distance
-                obj.Billboard.Adornee = root
-                
-                if Settings.ESP.Names then
-                    obj.NameLabel.Text = player.Name
-                    obj.NameLabel.Visible = true
-                else
-                    obj.NameLabel.Visible = false
-                end
+                obj.Highlight.FillTransparency = Settings.ESP.FillTransparency
+                activeTargets = activeTargets + 1
 
-                if Settings.ESP.Health then
-                    obj.HealthLabel.Text = math.floor(hum.Health) .. " HP"
-                    obj.HealthLabel.TextColor3 = Color3.fromRGB(255, math.floor(255 * (hum.Health/hum.MaxHealth)), 0)
-                    obj.HealthLabel.Visible = true
-                else
-                    obj.HealthLabel.Visible = false
-                end
-
-                if Settings.ESP.Distance then
-                    obj.DistLabel.Text = "[" .. math.floor(dist) .. "m]"
-                    obj.DistLabel.Visible = true
-                else
-                    obj.DistLabel.Visible = false
-                end
-            end
-
-            if obj.Tracer then
-                if Settings.ESP.Tracers and onScreen then
-                    obj.Tracer.From = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
-                    obj.Tracer.To = Vector2.new(pos.X, pos.Y)
-                    obj.Tracer.Color = colorMap[Settings.ESP.Color] or Color3.fromRGB(255,0,0)
-                    obj.Tracer.Visible = true
-                else
-                    obj.Tracer.Visible = false
+                if root then
+                    local dist = (root.Position - Camera.CFrame.Position).Magnitude
+                    if dist < closestDist then closestDist = dist end
                 end
             end
         end)
     end
+
     Settings.Performance.Targets = activeTargets
     if closestDist ~= 9999 then
         table.remove(Settings.History.Distance, 1)
@@ -252,7 +152,7 @@ local function GetClosestTarget()
 
     for player, _ in pairs(ESP_Objects) do
         if player.Team == LocalPlayer.Team and Settings.ESP.TeamCheck then continue end
-        
+
         local char = player.Character
         local part = char and (char:FindFirstChild(Settings.Aimbot.TargetPart) or char:FindFirstChild("HumanoidRootPart"))
         local hum = char and char:FindFirstChild("Humanoid")
@@ -301,13 +201,13 @@ local function UpdateAimbot(dt)
         local target, targetPart = GetClosestTarget()
         if target and targetPart then
             local targetPos = targetPart.Position
-            
+
             local vel = targetPart.AssemblyLinearVelocity or targetPart.Velocity
             targetPos = targetPos + vel * Settings.Aimbot.Prediction
-            
+
             local currentCF = Camera.CFrame
             local targetCF = CFrame.lookAt(currentCF.Position, targetPos)
-            
+
             local smoothFactor = 1 - math.exp(-Settings.Aimbot.Smoothness * dt)
             Camera.CFrame = currentCF:Lerp(targetCF, smoothFactor)
         end
@@ -323,9 +223,9 @@ RunService.RenderStepped:Connect(function(dt)
         fpsCounter = 0
         lastFpsUpdate = tick()
     end
-    
+
     pcall(function()
-        UpdateESP(dt)
+        UpdateESP()
         UpdateAimbot(dt)
     end)
 end)
@@ -352,8 +252,6 @@ Players.PlayerRemoving:Connect(function(player)
     local data = ESP_Objects[player]
     if data then
         if data.Highlight then data.Highlight:Destroy() end
-        if data.Billboard then data.Billboard:Destroy() end
-        if data.Tracer and DrawingEnabled then data.Tracer:Remove() end
         for _, conn in pairs(data.Connections or {}) do
             if conn then conn:Disconnect() end
         end
@@ -362,7 +260,7 @@ Players.PlayerRemoving:Connect(function(player)
 end)
 
 local HomeTab = Window:CreateTab("Combat", "crosshair")
-local VisualsTab = Window:CreateTab("Visuals", "eye")
+local VisualsTab = Window:CreateTab("Chams", "eye")
 local StatsTab = Window:CreateTab("Performance", "activity")
 
 HomeTab:CreateSection("Aimlock v1.1")
@@ -439,39 +337,37 @@ HomeTab:CreateButton({
     end,
 })
 
-VisualsTab:CreateSection("ESP Settings")
+VisualsTab:CreateSection("Chams v1.1")
 
 VisualsTab:CreateToggle({
-    Name = "Master Toggle",
+    Name = "Enable Chams",
     CurrentValue = Settings.ESP.Enabled,
-    Flag = "ESPEnabled",
+    Flag = "ChamsEnabled",
     Callback = function(v) Settings.ESP.Enabled = v end,
 })
 
 VisualsTab:CreateToggle({
     Name = "Team Check (Enemy Only)",
     CurrentValue = Settings.ESP.TeamCheck,
-    Flag = "ESPTeamCheck",
+    Flag = "ChamsTeamCheck",
     Callback = function(v) Settings.ESP.TeamCheck = v end,
 })
 
-local ESPCols = VisualsTab:CreateColumns(2)
-ESPCols:CreateToggle({ Name = "Boxes", CurrentValue = Settings.ESP.Boxes, Flag = "ESPBoxes", Callback = function(v) Settings.ESP.Boxes = v end })
-ESPCols:CreateToggle({ Name = "Names", CurrentValue = Settings.ESP.Names, Flag = "ESPNames", Callback = function(v) Settings.ESP.Names = v end })
-ESPCols:CreateToggle({ Name = "Health", CurrentValue = Settings.ESP.Health, Flag = "ESPHealth", Callback = function(v) Settings.ESP.Health = v end })
-ESPCols:CreateToggle({ Name = "Distance", CurrentValue = Settings.ESP.Distance, Flag = "ESPDistance", Callback = function(v) Settings.ESP.Distance = v end })
-VisualsTab:CreateToggle({
-    Name = "Tracers",
-    CurrentValue = Settings.ESP.Tracers,
-    Flag = "ESPTracers",
-    Callback = function(v) Settings.ESP.Tracers = v end,
+VisualsTab:CreateSlider({
+    Name = "Fill Transparency",
+    Range = {0, 100},
+    Increment = 5,
+    Suffix = "%",
+    CurrentValue = math.floor(Settings.ESP.FillTransparency * 100),
+    Flag = "ChamsTransparency",
+    Callback = function(v) Settings.ESP.FillTransparency = v / 100 end,
 })
 
 VisualsTab:CreateDropdown({
-    Name = "ESP Color",
+    Name = "Chams Color",
     Options = {"Red", "Green", "Blue", "White"},
     CurrentOption = {Settings.ESP.Color},
-    Flag = "ESPColor",
+    Flag = "ChamsColor",
     Callback = function(selection) Settings.ESP.Color = selection[1] or "Red" end,
 })
 
@@ -504,7 +400,7 @@ end)
 
 Rayfield:Notify({
     Title = "Entrenched v1.1",
-    Content = "Rayfield Gen2 loaded. Predictive RMB lock active.",
+    Content = "Chams-only ESP loaded. RMB to lock.",
     Duration = 5,
     Image = "crosshair",
 })
