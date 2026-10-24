@@ -3,23 +3,28 @@ local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local LocalPlayer = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
+local Stats = game:GetService("Stats")
 
 local DrawingEnabled = pcall(function()
     local test = Drawing.new("Line")
     test:Remove()
 end)
 
-local WindUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"))()
+local Rayfield = loadstring(game:HttpGet("https://raw.githubusercontent.com/SyncOfficialSpec/Rayfield_Gen_2_fanmade/main/source.lua"))()
 
-local Window = WindUI:CreateWindow({
-    Title = "Entrenched | Combat Suite",
-    Folder = "Entrenched_Suite",
-    Icon = "solar:crosshair-bold-duotone",
-    NewElements = true,
-    OpenButton = {
-        Title = "Open Suite",
-        Color = ColorSequence.new(Color3.fromHex("#4a4a4a"), Color3.fromHex("#8b0000")),
-    }
+local Window = Rayfield:CreateWindow({
+    Name = "Entrenched | Combat Suite",
+    Subtitle = "v3.0 Rayfield Gen2",
+    Icon = "crosshair",
+    Badge = {Text = "v3.0", Icon = "shield"},
+    LoadingTitle = "Entrenched",
+    LoadingSubtitle = "Combat Suite",
+    ToggleUIKeybind = "RightControl",
+    ConfigurationSaving = {
+        Enabled = true,
+        FolderName = "Entrenched_Suite",
+        FileName = "Config_v3",
+    },
 })
 
 local Settings = {
@@ -31,17 +36,32 @@ local Settings = {
         Health = true,
         Distance = true,
         Tracers = true,
-        Color = Color3.fromRGB(255, 0, 0)
+        Color = "Red",
     },
     Aimbot = {
         Enabled = false,
         FOV = 150,
         ShowFOV = true,
-        Smoothness = 0.25,
+        Smoothness = 30,
         TargetPart = "Head",
         WallCheck = true,
-        Keybind = Enum.UserInputType.MouseButton2
+    },
+    Performance = {
+        Ping = 0,
+        FPS = 0,
+        Kills = 0,
+        Targets = 0,
+    },
+    History = {
+        Distance = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
     }
+}
+
+local colorMap = {
+    Red = Color3.fromRGB(255, 0, 0),
+    Green = Color3.fromRGB(0, 255, 0),
+    Blue = Color3.fromRGB(0, 150, 255),
+    White = Color3.fromRGB(255, 255, 255),
 }
 
 local ESP_Objects = {}
@@ -108,7 +128,7 @@ local function CreateESP(player)
     if DrawingEnabled then
         tracer = Drawing.new("Line")
         tracer.Thickness = 1.5
-        tracer.Color = Settings.ESP.Color
+        tracer.Color = colorMap[Settings.ESP.Color]
     end
 
     ESP_Objects[player] = {
@@ -134,8 +154,11 @@ local function CreateESP(player)
 end
 
 local function UpdateESP(dt)
+    local activeTargets = 0
+    local closestDist = 9999
+    
     for player, obj in pairs(ESP_Objects) do
-        local success = pcall(function()
+        pcall(function()
             local char = player.Character
             local root = char and char:FindFirstChild("HumanoidRootPart")
             local hum = char and char:FindFirstChild("Humanoid")
@@ -151,14 +174,17 @@ local function UpdateESP(dt)
                 if obj.Tracer then obj.Tracer.Visible = false end
                 return
             end
-
+            
+            activeTargets = activeTargets + 1
             local pos, onScreen = Camera:WorldToViewportPoint(root.Position)
             local dist = (root.Position - Camera.CFrame.Position).Magnitude
+            if dist < closestDist then closestDist = dist end
 
             if obj.Highlight then
                 obj.Highlight.Enabled = Settings.ESP.Boxes
-                obj.Highlight.FillColor = Settings.ESP.Color
-                obj.Highlight.OutlineColor = Settings.ESP.Color
+                local c = colorMap[Settings.ESP.Color] or Color3.fromRGB(255,0,0)
+                obj.Highlight.FillColor = c
+                obj.Highlight.OutlineColor = c
             end
             
             if obj.Billboard then
@@ -192,13 +218,18 @@ local function UpdateESP(dt)
                 if Settings.ESP.Tracers and onScreen then
                     obj.Tracer.From = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
                     obj.Tracer.To = Vector2.new(pos.X, pos.Y)
-                    obj.Tracer.Color = Settings.ESP.Color
+                    obj.Tracer.Color = colorMap[Settings.ESP.Color] or Color3.fromRGB(255,0,0)
                     obj.Tracer.Visible = true
                 else
                     obj.Tracer.Visible = false
                 end
             end
         end)
+    end
+    Settings.Performance.Targets = activeTargets
+    if closestDist ~= 9999 then
+        table.remove(Settings.History.Distance, 1)
+        table.insert(Settings.History.Distance, math.floor(closestDist))
     end
 end
 
@@ -263,15 +294,7 @@ local function UpdateAimbot(dt)
         end
     end
 
-    local isAiming = false
-    local kb = Settings.Aimbot.Keybind
-    if typeof(kb) == "EnumItem" then
-        if kb.EnumType == Enum.UserInputType then
-            isAiming = UserInputService:IsMouseButtonPressed(kb)
-        else
-            isAiming = UserInputService:IsKeyDown(kb)
-        end
-    end
+    local isAiming = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
 
     if Settings.Aimbot.Enabled and isAiming then
         local target, targetPart = GetClosestTarget()
@@ -284,24 +307,41 @@ local function UpdateAimbot(dt)
             local currentCF = Camera.CFrame
             local targetCF = CFrame.lookAt(currentCF.Position, targetPos)
             
-            local smoothFactor = 1 - math.exp(-Settings.Aimbot.Smoothness * 30 * dt)
+            local smoothFactor = 1 - math.exp(-Settings.Aimbot.Smoothness * dt)
             Camera.CFrame = currentCF:Lerp(targetCF, smoothFactor)
         end
     end
 end
 
+local fpsCounter = 0
+local lastFpsUpdate = tick()
 RunService.RenderStepped:Connect(function(dt)
-    local success, err = pcall(function()
+    fpsCounter = fpsCounter + 1
+    if tick() - lastFpsUpdate >= 1 then
+        Settings.Performance.FPS = fpsCounter
+        fpsCounter = 0
+        lastFpsUpdate = tick()
+    end
+    
+    pcall(function()
         UpdateESP(dt)
         UpdateAimbot(dt)
     end)
 end)
 
+task.spawn(function()
+    while true do
+        pcall(function()
+            local ping = Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
+            Settings.Performance.Ping = math.floor(ping)
+        end)
+        task.wait(1)
+    end
+end)
+
 local function InitPlayer(player)
     if player == LocalPlayer then return end
-    task.spawn(function()
-        CreateESP(player)
-    end)
+    task.spawn(function() CreateESP(player) end)
 end
 
 for _, p in ipairs(Players:GetPlayers()) do InitPlayer(p) end
@@ -320,26 +360,142 @@ Players.PlayerRemoving:Connect(function(player)
     end
 end)
 
-local VisualsTab = Window:Tab({ Title = "Visuals", Icon = "solar:eye-bold" })
-local CombatTab = Window:Tab({ Title = "Combat", Icon = "solar:crosshair-bold" })
+local HomeTab = Window:CreateTab("Combat", "crosshair")
+local VisualsTab = Window:CreateTab("Visuals", "eye")
+local StatsTab = Window:CreateTab("Performance", "activity")
 
-local espSec = VisualsTab:Section({ Title = "ESP Settings" })
-espSec:Toggle({ Title = "Master Toggle", Value = Settings.ESP.Enabled, Callback = function(v) Settings.ESP.Enabled = v end })
-espSec:Toggle({ Title = "Team Check (Enemy Only)", Value = Settings.ESP.TeamCheck, Callback = function(v) Settings.ESP.TeamCheck = v end })
-espSec:Toggle({ Title = "Boxes (Highlight)", Value = Settings.ESP.Boxes, Callback = function(v) Settings.ESP.Boxes = v end })
-espSec:Toggle({ Title = "Names", Value = Settings.ESP.Names, Callback = function(v) Settings.ESP.Names = v end })
-espSec:Toggle({ Title = "Health", Value = Settings.ESP.Health, Callback = function(v) Settings.ESP.Health = v end })
-espSec:Toggle({ Title = "Distance", Value = Settings.ESP.Distance, Callback = function(v) Settings.ESP.Distance = v end })
-espSec:Toggle({ Title = "Tracers", Value = Settings.ESP.Tracers, Callback = function(v) Settings.ESP.Tracers = v end })
-espSec:Colorpicker({ Title = "ESP Color", Default = Settings.ESP.Color, Callback = function(v) Settings.ESP.Color = v end })
+HomeTab:CreateSection("Aimlock")
 
-local aimSec = CombatTab:Section({ Title = "Aimlock" })
-aimSec:Toggle({ Title = "Enable Aimlock", Value = Settings.Aimbot.Enabled, Callback = function(v) Settings.Aimbot.Enabled = v end })
-aimSec:Toggle({ Title = "Show FOV Circle", Value = Settings.Aimbot.ShowFOV, Callback = function(v) Settings.Aimbot.ShowFOV = v end })
-aimSec:Slider({ Title = "FOV Radius", Step = 10, Value = { Min = 50, Max = 500, Default = Settings.Aimbot.FOV }, Callback = function(v) Settings.Aimbot.FOV = v end })
-aimSec:Slider({ Title = "Smoothness (Snappy)", Step = 0.05, Value = { Min = 0.05, Max = 1, Default = Settings.Aimbot.Smoothness }, Callback = function(v) Settings.Aimbot.Smoothness = v end })
-aimSec:Dropdown({ Title = "Target Part", Values = { "Head", "HumanoidRootPart", "UpperTorso" }, Value = Settings.Aimbot.TargetPart, Callback = function(v) Settings.Aimbot.TargetPart = v end })
-aimSec:Toggle({ Title = "Wall Check (Raycast)", Value = Settings.Aimbot.WallCheck, Callback = function(v) Settings.Aimbot.WallCheck = v end })
-aimSec:Keybind({ Title = "Activation Key", Default = Enum.UserInputType.MouseButton2, Callback = function(v) Settings.Aimbot.Keybind = v end })
+HomeTab:CreateToggle({
+    Name = "Enable Aimlock",
+    CurrentValue = Settings.Aimbot.Enabled,
+    Flag = "AimbotEnabled",
+    Callback = function(v) Settings.Aimbot.Enabled = v end,
+})
 
-Window:SetPanelBackground(true)
+HomeTab:CreateToggle({
+    Name = "Show FOV Circle",
+    CurrentValue = Settings.Aimbot.ShowFOV,
+    Flag = "AimbotFOV",
+    Callback = function(v) Settings.Aimbot.ShowFOV = v end,
+})
+
+HomeTab:CreateSlider({
+    Name = "FOV Radius",
+    Range = {50, 500},
+    Increment = 10,
+    Suffix = "px",
+    CurrentValue = Settings.Aimbot.FOV,
+    Flag = "AimbotFOVRadius",
+    Callback = function(v) Settings.Aimbot.FOV = v end,
+})
+
+HomeTab:CreateSlider({
+    Name = "Smoothness (Snappy)",
+    Range = {10, 100},
+    Increment = 5,
+    Suffix = "",
+    CurrentValue = Settings.Aimbot.Smoothness,
+    Flag = "AimbotSmooth",
+    Callback = function(v) Settings.Aimbot.Smoothness = v end,
+})
+
+HomeTab:CreateDropdown({
+    Name = "Target Part",
+    Options = {"Head", "HumanoidRootPart", "UpperTorso"},
+    CurrentOption = {Settings.Aimbot.TargetPart},
+    Flag = "AimbotPart",
+    Callback = function(selection) Settings.Aimbot.TargetPart = selection[1] or "Head" end,
+})
+
+HomeTab:CreateToggle({
+    Name = "Wall Check (Raycast)",
+    CurrentValue = Settings.Aimbot.WallCheck,
+    Flag = "AimbotWallCheck",
+    Callback = function(v) Settings.Aimbot.WallCheck = v end,
+})
+
+HomeTab:CreateButton({
+    Name = "Activation Key",
+    Icon = "mouse",
+    Callback = function()
+        Rayfield:Notify({
+            Title = "Hardcoded",
+            Content = "Hold Right Mouse Button (RMB) to lock on.",
+            Duration = 4,
+            Image = "mouse",
+        })
+    end,
+})
+
+VisualsTab:CreateSection("ESP Settings")
+
+VisualsTab:CreateToggle({
+    Name = "Master Toggle",
+    CurrentValue = Settings.ESP.Enabled,
+    Flag = "ESPEnabled",
+    Callback = function(v) Settings.ESP.Enabled = v end,
+})
+
+VisualsTab:CreateToggle({
+    Name = "Team Check (Enemy Only)",
+    CurrentValue = Settings.ESP.TeamCheck,
+    Flag = "ESPTeamCheck",
+    Callback = function(v) Settings.ESP.TeamCheck = v end,
+})
+
+local ESPCols = VisualsTab:CreateColumns(2)
+ESPCols:CreateToggle({ Name = "Boxes", CurrentValue = Settings.ESP.Boxes, Flag = "ESPBoxes", Callback = function(v) Settings.ESP.Boxes = v end })
+ESPCols:CreateToggle({ Name = "Names", CurrentValue = Settings.ESP.Names, Flag = "ESPNames", Callback = function(v) Settings.ESP.Names = v end })
+ESPCols:CreateToggle({ Name = "Health", CurrentValue = Settings.ESP.Health, Flag = "ESPHealth", Callback = function(v) Settings.ESP.Health = v end })
+ESPCols:CreateToggle({ Name = "Distance", CurrentValue = Settings.ESP.Distance, Flag = "ESPDistance", Callback = function(v) Settings.ESP.Distance = v end })
+VisualsTab:CreateToggle({
+    Name = "Tracers",
+    CurrentValue = Settings.ESP.Tracers,
+    Flag = "ESPTracers",
+    Callback = function(v) Settings.ESP.Tracers = v end,
+})
+
+VisualsTab:CreateDropdown({
+    Name = "ESP Color",
+    Options = {"Red", "Green", "Blue", "White"},
+    CurrentOption = {Settings.ESP.Color},
+    Flag = "ESPColor",
+    Callback = function(selection) Settings.ESP.Color = selection[1] or "Red" end,
+})
+
+StatsTab:CreateSection("Live Feed")
+
+local StatRow = StatsTab:CreateRow()
+local PingStat = StatRow:CreateStat({ Name = "Ping", Icon = "wifi", Value = "0ms", Delta = "" })
+local FPSStat = StatRow:CreateStat({ Name = "FPS", Icon = "zap", Value = "0", Delta = "" })
+local TargStat = StatRow:CreateStat({ Name = "Targets", Icon = "users", Value = "0", Delta = "" })
+
+StatsTab:CreateSection("Distance History")
+local DistChart = StatsTab:CreateChart({
+    Name = "Closest Target Distance",
+    Icon = "ruler",
+    Suffix = "m",
+    Points = Settings.History.Distance,
+})
+
+task.spawn(function()
+    while true do
+        task.wait(1)
+        pcall(function()
+            PingStat:Set({Value = Settings.Performance.Ping .. "ms"})
+            FPSStat:Set({Value = tostring(Settings.Performance.FPS)})
+            TargStat:Set({Value = tostring(Settings.Performance.Targets)})
+            DistChart:Push(Settings.History.Distance[#Settings.History.Distance] or 0)
+        end)
+    end
+end)
+
+Rayfield:Notify({
+    Title = "Entrenched v3.0",
+    Content = "Rayfield Gen2 loaded. Hold RMB to aimlock.",
+    Duration = 5,
+    Image = "crosshair",
+})
+
+Rayfield:LoadConfiguration()
