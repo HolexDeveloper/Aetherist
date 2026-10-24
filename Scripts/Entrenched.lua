@@ -14,16 +14,16 @@ local Rayfield = loadstring(game:HttpGet("https://raw.githubusercontent.com/Sync
 
 local Window = Rayfield:CreateWindow({
     Name = "Entrenched | Combat Suite",
-    Subtitle = "v3.0 Rayfield Gen2",
+    Subtitle = "v1.1 Rayfield Gen2",
     Icon = "crosshair",
-    Badge = {Text = "v3.0", Icon = "shield"},
+    Badge = {Text = "v1.1", Icon = "shield"},
     LoadingTitle = "Entrenched",
-    LoadingSubtitle = "Combat Suite",
+    LoadingSubtitle = "Combat Suite v1.1",
     ToggleUIKeybind = "RightControl",
     ConfigurationSaving = {
         Enabled = true,
         FolderName = "Entrenched_Suite",
-        FileName = "Config_v3",
+        FileName = "Config_v1_1",
     },
 })
 
@@ -294,6 +294,7 @@ local function UpdateAimbot(dt)
         end
     end
 
+    -- Hardwired Right Mouse Button check
     local isAiming = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
 
     if Settings.Aimbot.Enabled and isAiming then
@@ -364,7 +365,7 @@ local HomeTab = Window:CreateTab("Combat", "crosshair")
 local VisualsTab = Window:CreateTab("Visuals", "eye")
 local StatsTab = Window:CreateTab("Performance", "activity")
 
-HomeTab:CreateSection("Aimlock")
+HomeTab:CreateSection("Aimlock v1.1")
 
 HomeTab:CreateToggle({
     Name = "Enable Aimlock",
@@ -420,7 +421,7 @@ HomeTab:CreateButton({
     Icon = "mouse",
     Callback = function()
         Rayfield:Notify({
-            Title = "Hardcoded",
+            Title = "v1.1 Hardwired",
             Content = "Hold Right Mouse Button (RMB) to lock on.",
             Duration = 4,
             Image = "mouse",
@@ -492,8 +493,8 @@ task.spawn(function()
 end)
 
 Rayfield:Notify({
-    Title = "Entrenched v3.0",
-    Content = "Rayfield Gen2 loaded. Hold RMB to aimlock.",
+    Title = "Entrenched v1.1",
+    Content = "Rayfield Gen2 loaded. Hardwired RMB lock active.",
     Duration = 5,
     Image = "crosshair",
 })
