@@ -1,6 +1,6 @@
 -- ============================================
--- AETHERIST / DEMON ARENA - VIM EDITION
--- VirtualInputManager for Clicks, Equip, Anti-AFK
+-- AETHERIST / DEMON ARENA - EQUIP LOCK & VIM CLICK
+-- Direct Equip Forcing, VIM Left Click Spam
 -- ============================================
 
 local Players = game:GetService("Players")
@@ -13,7 +13,7 @@ local Camera = workspace.CurrentCamera
 
 -- Singleton Management
 local genv = getgenv and getgenv() or _G
-local SCRIPT_KEY = "Aetherist_VIM_V1"
+local SCRIPT_KEY = "Aetherist_EquipLock_V1"
 
 if genv[SCRIPT_KEY] then
     local old = genv[SCRIPT_KEY]
@@ -83,28 +83,38 @@ end
 local function performClick()
     pcall(function()
         local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
-        VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, true, game, 1)
-        task.wait(0.05)
-        VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, false, game, 1)
-    end)
-end
-
-local function performEquip()
-    pcall(function()
-        -- Simulate pressing '1' to equip the first tool
-        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.One, false, game)
-        task.wait(0.05)
-        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.One, false, game)
+        VirtualInputManager:MouseButton1Down(center.X, center.Y, game)
+        task.wait(0.02)
+        VirtualInputManager:MouseButton1Up(center.X, center.Y, game)
     end)
 end
 
 local function performAntiAfk()
     pcall(function()
-        -- Simulate a harmless key press to reset AFK timer
         VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.RightShift, false, game)
         task.wait(0.05)
         VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.RightShift, false, game)
     end)
+end
+
+-- Direct Equip Forcing (Bypasses hotkey toggle unequip)
+local function forceEquipTool()
+    local char = getCharacter()
+    local hum = getHumanoid()
+    if not char or not hum then return end
+    
+    -- Find the tool in backpack or character
+    local tool = LocalPlayer.Backpack:FindFirstChildWhichIsA("Tool")
+    if not tool then
+        tool = char:FindFirstChildWhichIsA("Tool")
+    end
+    
+    if tool and tool:IsA("Tool") then
+        -- If it's in the backpack, equip it directly via Humanoid
+        if tool.Parent == LocalPlayer.Backpack then
+            pcall(function() hum:EquipTool(tool) end)
+        end
+    end
 end
 
 -- Smooth Tween (Under 40 Walkspeed equivalent)
@@ -154,44 +164,23 @@ Script:TrackThread(task.spawn(function()
     end
 end))
 
--- Equip Verification Loop (Every 3 seconds)
+-- Rapid Equip Verification Loop (Every 0.2s to outpace game unequip scripts)
 Script:TrackThread(task.spawn(function()
     while Script.Active do
         if State.AutoFarmActive then
-            pcall(function()
-                local char = getCharacter()
-                local hasToolEquipped = false
-                
-                if char then
-                    local tool = char:FindFirstChildWhichIsA("Tool")
-                    if tool then
-                        hasToolEquipped = true
-                    end
-                end
-                
-                if not hasToolEquipped then
-                    performEquip()
-                end
-            end)
+            pcall(forceEquipTool)
         end
-        task.wait(3)
+        task.wait(0.2)
     end
 end))
 
--- Spam Click Loop (0.30s delay)
+-- Spam Click Loop
 Script:TrackThread(task.spawn(function()
     while Script.Active do
         if State.AutoFarmActive then
-            pcall(function()
-                local char = getCharacter()
-                local tool = char and char:FindFirstChildWhichIsA("Tool")
-                
-                if tool and tool.Parent == char then
-                    performClick()
-                end
-            end)
+            pcall(performClick)
         end
-        task.wait(0.30)
+        task.wait(0.05) -- Fast spam for training speedup
     end
 end))
 
@@ -199,9 +188,7 @@ end))
 Script:TrackThread(task.spawn(function()
     while Script.Active do
         if State.SilentAntiAFK then
-            pcall(function()
-                performAntiAfk()
-            end)
+            pcall(performAntiAfk)
         end
         task.wait(120)
     end
@@ -212,7 +199,7 @@ local Rayfield = loadstring(game:HttpGet("https://raw.githubusercontent.com/Sync
 
 local Window = Rayfield:CreateWindow({
     name = "Aetherist / Demon Arena",
-    subtitle = "VIM Edition",
+    subtitle = "Equip Lock Edition",
     icon = "bot",
     theme = "default",
     configuration = {
@@ -240,9 +227,12 @@ AutofarmTab:CreateToggle({
     name = "Activate Autofarm",
     value = false,
     flag = "AutoFarmActive",
-    description = "Caution: You must equip the tool you want to farm with first.",
+    description = "Caution: You must equip the tool you want to farm with first. Script will lock it in hand and spam LMB.",
     callback = function(value)
         State.AutoFarmActive = value
+        if value then
+            forceEquipTool()
+        end
     end,
 })
 
@@ -276,9 +266,9 @@ ExtrasTab:CreateToggle({
 
 Window:Notify({
     title = "4080 Initialized",
-    content = "VIM wired. UI stripped. Extras tab ready.",
+    content = "Equip locked. LMB spam active. UI stripped.",
     duration = 4,
     icon = "bot",
 })
 
-print("[Aetherist] VIM Edition loaded. All inputs routed through VirtualInputManager.")
+print("[Aetherist] Equip Lock Edition loaded. Tool forced in hand.")
