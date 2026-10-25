@@ -1,9 +1,94 @@
 local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
+local Lighting = game:GetService("Lighting")
+local Stats = game:GetService("Stats")
+
+local workspace = workspace
+local game = game
+local math = math
+local table = table
+local task = task
+local tick = tick
+local os = os
+
 local LocalPlayer = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
-local Stats = game:GetService("Stats")
+local GetMouseLocation = UserInputService.GetMouseLocation
+local IsMouseButtonPressed = UserInputService.IsMouseButtonPressed
+local WorldToViewportPoint = Camera.WorldToViewportPoint
+local Raycast = workspace.Raycast
+
+-- AGGRESSIVE PERFORMANCE KILLS (Deep Clean, No Shadows, Min Graphics)
+task.spawn(function()
+    Lighting.GlobalShadows = false
+    Lighting.Technology = Enum.Technology.Voxel
+    Lighting.FogEnd = 100000
+    Lighting.FogStart = 100000
+    Lighting.Brightness = 1
+    Lighting.ClockTime = 14
+    Lighting.OutdoorAmbient = Color3.fromRGB(128, 128, 128)
+    Lighting.Ambient = Color3.fromRGB(128, 128, 128)
+    
+    for _, v in ipairs(Lighting:GetChildren()) do
+        if v.ClassName == "Sky" then 
+            v:Destroy()
+        elseif v:IsA("PostEffect") then 
+            v.Enabled = false 
+        end
+    end
+
+    local Terrain = workspace:FindFirstChild("Terrain")
+    if Terrain then
+        Terrain.WaterWaveSize = 0
+        Terrain.WaterWaveSpeed = 0
+        Terrain.WaterReflectance = 0
+    end
+
+    if workspace.StreamingEnabled == false then
+        workspace.StreamingEnabled = true
+    end
+
+    pcall(function()
+        local ugs = UserSettings():GetService("UserGameSettings")
+        ugs.SavedQualityScale = 1
+    end)
+
+    local descendants = workspace:GetDescendants()
+    for i = 1, #descendants do
+        local v = descendants[i]
+        local cn = v.ClassName
+        if cn == "Part" or cn == "MeshPart" or cn == "UnionOperation" or cn == "WedgePart" or cn == "SpawnLocation" or cn == "TrussPart" or cn == "CornerWedgePart" then
+            v.CastShadow = false
+        elseif cn == "ParticleEmitter" or cn == "Trail" or cn == "Beam" or cn == "Fire" or cn == "Sparkles" or cn == "Smoke" then
+            v.Enabled = false
+        elseif cn == "Decal" or cn == "Texture" then
+            v.Transparency = 1
+        elseif cn == "PointLight" or cn == "SpotLight" or cn == "SurfaceLight" then
+            v.Enabled = false
+        elseif cn == "Humanoid" then
+            v.HealthDisplayDistance = 0
+            v.NameDisplayDistance = 0
+        end
+        if i % 500 == 0 then task.wait() end
+    end
+    
+    workspace.DescendantAdded:Connect(function(v)
+        local cn = v.ClassName
+        if cn == "Part" or cn == "MeshPart" or cn == "UnionOperation" or cn == "WedgePart" or cn == "SpawnLocation" or cn == "TrussPart" or cn == "CornerWedgePart" then
+            v.CastShadow = false
+        elseif cn == "ParticleEmitter" or cn == "Trail" or cn == "Beam" or cn == "Fire" or cn == "Sparkles" or cn == "Smoke" then
+            v.Enabled = false
+        elseif cn == "Decal" or cn == "Texture" then
+            v.Transparency = 1
+        elseif cn == "PointLight" or cn == "SpotLight" or cn == "SurfaceLight" then
+            v.Enabled = false
+        elseif cn == "Humanoid" then
+            v.HealthDisplayDistance = 0
+            v.NameDisplayDistance = 0
+        end
+    end)
+end)
 
 local DrawingEnabled = pcall(function()
     local test = Drawing.new("Line")
@@ -14,16 +99,16 @@ local Rayfield = loadstring(game:HttpGet("https://raw.githubusercontent.com/Sync
 
 local Window = Rayfield:CreateWindow({
     Name = "Entrenched | Combat Suite",
-    Subtitle = "v1.1 Rayfield Gen2",
+    Subtitle = "v1.2 Rat-Optimized",
     Icon = "crosshair",
-    Badge = {Text = "v1.1", Icon = "shield"},
+    Badge = {Text = "v1.2", Icon = "shield"},
     LoadingTitle = "Entrenched",
-    LoadingSubtitle = "Combat Suite v1.1",
+    LoadingSubtitle = "Combat Suite v1.2",
     ToggleUIKeybind = "RightControl",
     ConfigurationSaving = {
         Enabled = true,
         FolderName = "Entrenched_Suite",
-        FileName = "Config_v1_1",
+        FileName = "Config_v1_2",
     },
 })
 
@@ -61,9 +146,11 @@ local colorMap = {
 }
 
 local ESP_Objects = {}
-local raycastParams = RaycastParams.new()
-raycastParams.FilterType = Enum.RaycastFilterType.Exclude
-raycastParams.IgnoreWater = true
+local ESP_Array = {}
+
+local SharedRaycastParams = RaycastParams.new()
+SharedRaycastParams.FilterType = Enum.RaycastFilterType.Exclude
+SharedRaycastParams.IgnoreWater = true
 
 local function CreateESP(player)
     if player == LocalPlayer then return end
@@ -79,12 +166,16 @@ local function CreateESP(player)
     highlight.Adornee = char
     highlight.Parent = char
 
-    ESP_Objects[player] = {
+    local data = {
         Highlight = highlight,
-        Connections = {}
+        Connections = {},
+        Player = player
     }
+    
+    ESP_Objects[player] = data
+    table.insert(ESP_Array, data)
 
-    ESP_Objects[player].Connections.CharAdded = player.CharacterAdded:Connect(function(newChar)
+    data.Connections.CharAdded = player.CharacterAdded:Connect(function(newChar)
         task.wait(0.5)
         if newChar and ESP_Objects[player] then
             ESP_Objects[player].Highlight.Adornee = newChar
@@ -93,44 +184,59 @@ local function CreateESP(player)
     end)
 end
 
+local lastESPUpdate = 0
 local function UpdateESP()
     local activeTargets = 0
-    local closestDist = 9999
+    local closestDistSq = 99990000
+    local espEnabled = Settings.ESP.Enabled
+    local teamCheck = Settings.ESP.TeamCheck
+    local localTeam = LocalPlayer.Team
+    local espColor = colorMap[Settings.ESP.Color] or colorMap.Red
+    local fillTrans = Settings.ESP.FillTransparency
+    local camPos = Camera.CFrame.Position
 
-    for player, obj in pairs(ESP_Objects) do
-        pcall(function()
-            local char = player.Character
-            local hum = char and char:FindFirstChild("Humanoid")
-            local root = char and char:FindFirstChild("HumanoidRootPart")
+    for i = 1, #ESP_Array do
+        local obj = ESP_Array[i]
+        local player = obj.Player
+        local char = player.Character
+        
+        if char then
+            local hum = char:FindFirstChild("Humanoid")
+            local root = char:FindFirstChild("HumanoidRootPart")
 
             local isEnemy = true
-            if Settings.ESP.TeamCheck and player.Team == LocalPlayer.Team then
+            if teamCheck and player.Team == localTeam then
                 isEnemy = false
             end
 
-            local alive = char and hum and hum.Health > 0
-            local visible = Settings.ESP.Enabled and isEnemy and alive
+            local alive = hum and hum.Health > 0
+            local visible = espEnabled and isEnemy and alive
 
-            obj.Highlight.Enabled = visible
+            local hl = obj.Highlight
+            if hl.Enabled ~= visible then hl.Enabled = visible end
+            
             if visible then
-                local c = colorMap[Settings.ESP.Color] or Color3.fromRGB(255, 0, 0)
-                obj.Highlight.FillColor = c
-                obj.Highlight.OutlineColor = c
-                obj.Highlight.FillTransparency = Settings.ESP.FillTransparency
+                if hl.FillColor ~= espColor then hl.FillColor = espColor end
+                if hl.OutlineColor ~= espColor then hl.OutlineColor = espColor end
+                if hl.FillTransparency ~= fillTrans then hl.FillTransparency = fillTrans end
+                
                 activeTargets = activeTargets + 1
-
                 if root then
-                    local dist = (root.Position - Camera.CFrame.Position).Magnitude
-                    if dist < closestDist then closestDist = dist end
+                    local rp = root.Position
+                    local dx = rp.X - camPos.X
+                    local dy = rp.Y - camPos.Y
+                    local dz = rp.Z - camPos.Z
+                    local distSq = dx*dx + dy*dy + dz*dz
+                    if distSq < closestDistSq then closestDistSq = distSq end
                 end
             end
-        end)
+        end
     end
 
     Settings.Performance.Targets = activeTargets
-    if closestDist ~= 9999 then
+    if closestDistSq ~= 99990000 then
         table.remove(Settings.History.Distance, 1)
-        table.insert(Settings.History.Distance, math.floor(closestDist))
+        table.insert(Settings.History.Distance, math.floor(math.sqrt(closestDistSq)))
     end
 end
 
@@ -146,36 +252,75 @@ if DrawingEnabled then
     FOVCircle.Visible = false
 end
 
+local IgnoreList = {}
+local function CheckVisibility(origin, targetPos, targetChar)
+    local dir = targetPos - origin
+    table.clear(IgnoreList)
+    IgnoreList[1] = LocalPlayer.Character
+    IgnoreList[2] = Camera
+    local count = 2
+
+    SharedRaycastParams.FilterDescendantsInstances = IgnoreList
+
+    while true do
+        local result = Raycast(workspace, origin, dir, SharedRaycastParams)
+        if not result then return true end
+        if result.Instance:IsDescendantOf(targetChar) then return true end
+        
+        local inst = result.Instance
+        local trans = inst.Transparency
+        
+        if trans >= 0.9 or (trans >= 0.5 and inst.Material == Enum.Material.Glass) or not inst.CanCollide then
+            count = count + 1
+            IgnoreList[count] = inst
+            SharedRaycastParams.FilterDescendantsInstances = IgnoreList
+        else
+            return false
+        end
+    end
+end
+
 local function GetClosestTarget()
-    local closest, shortest, closestPart = nil, Settings.Aimbot.FOV, nil
-    local mousePos = UserInputService:GetMouseLocation()
+    local closest, shortestSq, closestPart = nil, Settings.Aimbot.FOV * Settings.Aimbot.FOV, nil
+    local mousePos = GetMouseLocation(UserInputService)
+    local camPos = Camera.CFrame.Position
+    local localTeam = LocalPlayer.Team
+    local teamCheck = Settings.ESP.TeamCheck
+    local wallCheck = Settings.Aimbot.WallCheck
+    local targetPartName = Settings.Aimbot.TargetPart
 
-    for player, _ in pairs(ESP_Objects) do
-        if player.Team == LocalPlayer.Team and Settings.ESP.TeamCheck then continue end
+    for i = 1, #ESP_Array do
+        local obj = ESP_Array[i]
+        local player = obj.Player
+        
+        if not (teamCheck and player.Team == localTeam) then
+            local char = player.Character
+            if char then
+                local part = char:FindFirstChild(targetPartName) or char:FindFirstChild("HumanoidRootPart")
+                local hum = char:FindFirstChild("Humanoid")
 
-        local char = player.Character
-        local part = char and (char:FindFirstChild(Settings.Aimbot.TargetPart) or char:FindFirstChild("HumanoidRootPart"))
-        local hum = char and char:FindFirstChild("Humanoid")
-
-        if part and hum and hum.Health > 0 then
-            local screenPos, onScreen = Camera:WorldToViewportPoint(part.Position)
-            if onScreen then
-                local dist = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
-                if dist < shortest then
-                    if Settings.Aimbot.WallCheck then
-                        if LocalPlayer.Character then
-                            raycastParams.FilterDescendantsInstances = {LocalPlayer.Character}
+                if part and hum and hum.Health > 0 then
+                    local rawDir = part.Position - camPos
+                    if rawDir.Magnitude <= 1000 then 
+                        local screenPos, onScreen = WorldToViewportPoint(Camera, part.Position)
+                        if onScreen then
+                            local dx = screenPos.X - mousePos.X
+                            local dy = screenPos.Y - mousePos.Y
+                            local distSq = dx*dx + dy*dy
+                            if distSq < shortestSq then
+                                if wallCheck then
+                                    if CheckVisibility(camPos, part.Position, char) then
+                                        shortestSq = distSq
+                                        closest = player
+                                        closestPart = part
+                                    end
+                                else
+                                    shortestSq = distSq
+                                    closest = player
+                                    closestPart = part
+                                end
+                            end
                         end
-                        local result = workspace:Raycast(Camera.CFrame.Position, (part.Position - Camera.CFrame.Position).Unit * 1000, raycastParams)
-                        if result and result.Instance:IsDescendantOf(char) then
-                            shortest = dist
-                            closest = player
-                            closestPart = part
-                        end
-                    else
-                        shortest = dist
-                        closest = player
-                        closestPart = part
                     end
                 end
             end
@@ -186,22 +331,18 @@ end
 
 local function UpdateAimbot(dt)
     if FOVCircle then
-        if Settings.Aimbot.ShowFOV and Settings.Aimbot.Enabled then
-            FOVCircle.Position = UserInputService:GetMouseLocation()
+        local showFOV = Settings.Aimbot.ShowFOV and Settings.Aimbot.Enabled
+        if FOVCircle.Visible ~= showFOV then FOVCircle.Visible = showFOV end
+        if showFOV then
+            FOVCircle.Position = GetMouseLocation(UserInputService)
             FOVCircle.Radius = Settings.Aimbot.FOV
-            FOVCircle.Visible = true
-        else
-            FOVCircle.Visible = false
         end
     end
 
-    local isAiming = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
-
-    if Settings.Aimbot.Enabled and isAiming then
+    if Settings.Aimbot.Enabled and IsMouseButtonPressed(UserInputService, Enum.UserInputType.MouseButton2) then
         local target, targetPart = GetClosestTarget()
         if target and targetPart then
             local targetPos = targetPart.Position
-
             local vel = targetPart.AssemblyLinearVelocity or targetPart.Velocity
             targetPos = targetPos + vel * Settings.Aimbot.Prediction
 
@@ -215,19 +356,25 @@ local function UpdateAimbot(dt)
 end
 
 local fpsCounter = 0
-local lastFpsUpdate = tick()
+local lastFpsUpdate = os.clock()
+
 RunService.RenderStepped:Connect(function(dt)
     fpsCounter = fpsCounter + 1
-    if tick() - lastFpsUpdate >= 1 then
+    local now = os.clock()
+    if now - lastFpsUpdate >= 1 then
         Settings.Performance.FPS = fpsCounter
         fpsCounter = 0
-        lastFpsUpdate = tick()
+        lastFpsUpdate = now
     end
+    UpdateAimbot(dt)
+end)
 
-    pcall(function()
+RunService.Heartbeat:Connect(function()
+    local now = os.clock()
+    if now - lastESPUpdate >= 0.1 then
         UpdateESP()
-        UpdateAimbot(dt)
-    end)
+        lastESPUpdate = now
+    end
 end)
 
 task.spawn(function()
@@ -255,6 +402,14 @@ Players.PlayerRemoving:Connect(function(player)
         for _, conn in pairs(data.Connections or {}) do
             if conn then conn:Disconnect() end
         end
+        
+        for i = 1, #ESP_Array do
+            if ESP_Array[i] == data then
+                table.remove(ESP_Array, i)
+                break
+            end
+        end
+        
         ESP_Objects[player] = nil
     end
 end)
@@ -263,7 +418,7 @@ local HomeTab = Window:CreateTab("Combat", "crosshair")
 local VisualsTab = Window:CreateTab("Chams", "eye")
 local StatsTab = Window:CreateTab("Performance", "activity")
 
-HomeTab:CreateSection("Aimlock v1.1")
+HomeTab:CreateSection("Aimlock v1.2")
 
 HomeTab:CreateToggle({
     Name = "Enable Aimlock",
@@ -329,7 +484,7 @@ HomeTab:CreateButton({
     Icon = "mouse",
     Callback = function()
         Rayfield:Notify({
-            Title = "v1.1 Hardwired",
+            Title = "v1.2 Hardwired",
             Content = "Hold Right Mouse Button (RMB) to lock on.",
             Duration = 4,
             Image = "mouse",
@@ -337,7 +492,7 @@ HomeTab:CreateButton({
     end,
 })
 
-VisualsTab:CreateSection("Chams v1.1")
+VisualsTab:CreateSection("Chams v1.2")
 
 VisualsTab:CreateToggle({
     Name = "Enable Chams",
@@ -389,18 +544,16 @@ local DistChart = StatsTab:CreateChart({
 task.spawn(function()
     while true do
         task.wait(1)
-        pcall(function()
-            PingStat:Set({Value = Settings.Performance.Ping .. "ms"})
-            FPSStat:Set({Value = tostring(Settings.Performance.FPS)})
-            TargStat:Set({Value = tostring(Settings.Performance.Targets)})
-            DistChart:Push(Settings.History.Distance[#Settings.History.Distance] or 0)
-        end)
+        PingStat:Set({Value = Settings.Performance.Ping .. "ms"})
+        FPSStat:Set({Value = tostring(Settings.Performance.FPS)})
+        TargStat:Set({Value = tostring(Settings.Performance.Targets)})
+        DistChart:Push(Settings.History.Distance[#Settings.History.Distance] or 0)
     end
 end)
 
 Rayfield:Notify({
-    Title = "Entrenched v1.1",
-    Content = "Chams-only ESP loaded. RMB to lock.",
+    Title = "Entrenched v1.2",
+    Content = "Bare Metal Optimization. Chams-only ESP. RMB to lock.",
     Duration = 5,
     Image = "crosshair",
 })
