@@ -1,24 +1,31 @@
 --[[
-    Aetherist Loader
+    Aetherist Loader (multigame + subplace support)
     GitHub: https://github.com/HolexDeveloper
 
-    Simple Roblox script loader with a local game-ID library (CONFIG).
+    Simple Roblox script loader with a local game library (GAMES/CONFIG).
     - Waits for the game to load and detects the LocalPlayer.
-    - If game.PlaceId matches an entry in CONFIG, that game's local script runs.
-    - If the PlaceId does NOT match any supported game, the loader simply runs
-      the local Universal_Script (no extra fetching needed).
+    - If game.PlaceId matches ANY id listed in a game entry, that game's script runs.
+    - Optional: if an entry has "gameId" (universe id), EVERY subplace of that
+      game matches automatically — no need to list each subplace id.
+    - If nothing matches, the loader runs the local Universal_Script fallback.
+
+    FIX NOTE:
+    Lua does NOT allow multiple ids in one table key, e.g.
+        [id1,id2,id3] = { ... }      -- syntax error -> whole file fails to load
+    The library is now a GAMES list where each entry holds an "ids" array,
+    and a reverse-lookup map (CONFIG) is built from it at runtime.
 ]]
 
 -- =====================================================================
 -- LOCAL SCRIPTS (stored right here inside loader.lua)
 -- =====================================================================
 
--- Universal script: runs for every game that is NOT in CONFIG below
+-- Universal script: runs for every game that is NOT matched below
 local Universal_Script = [[
 loadstring(game:HttpGet("https://raw.githubusercontent.com/HolexDeveloper/Aetherist/refs/heads/main/Scripts/Universal.lua", true))()
 ]]
 
--- Entrenched script: runs only when LocalPlayer is detected inside Entrenched WW1
+-- Entrenched script: runs only inside Entrenched WW1
 local Entrenched_Script = [[
 loadstring(game:HttpGet("https://raw.githubusercontent.com/HolexDeveloper/Aetherist/refs/heads/main/Scripts/Entrenched.lua", true))()
 ]]
@@ -37,31 +44,65 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/HolexDeveloper/Aether
 local Monochrome_Script = [[
 loadstring(game:HttpGet("https://raw.githubusercontent.com/HolexDeveloper/Aetherist/refs/heads/main/Scripts/monochrome.lua", true))()
 ]]
+
 -- =====================================================================
--- LOCAL LIBRARY OF SUPPORTED GAMES
+-- LOCAL LIBRARY OF SUPPORTED GAMES  (MULTI-GAME / SUBPLACE SUPPORT)
 -- =====================================================================
-local CONFIG = {
-    [3678761576] = { -- Entrenched WW1
+-- Each entry:
+--   ids    = { mainGameId, subplaceId1, subplaceId2, ... }  (list every place)
+--   gameId = OPTIONAL universe id -> auto-matches ALL subplaces of the game.
+--            Get it once by executing:  print(game.GameId)  inside the game.
+local GAMES = {
+    {
         title  = "Entrenched WW1",
-        page   = "https://www.roblox.com/games/3678761576/ENTRENCHED",
+        ids    = { 3678761576 },
         script = Entrenched_Script,
     },
-    [100661692738190] = { -- FPV Drone Battlefield
+    {
         title  = "FPV Drone Battlefield",
-        page   = "https://www.roblox.com/games/100661692738190/FPV-Drone-Battlefield",
+        ids    = { 100661692738190 },
         script = FPV_Drone_Battlefield_Script,
     },
-    [10530261598,10530261598,10530261598,10530261598] = { -- House of the Locust
+    {
         title  = "House of the Locust",
-        page   = "https://www.roblox.com/games/86247128610772/House-of-the-Locust",
+        ids    = {
+            10530261598,        -- lobby / main game (as you provided)
+            -- 86247128610772, -- NOTE: this is the id inside your game URL.
+            --                 -- Uncomment it if it is a real place of this game.
+            -- SUBPLACE_ID_2,  -- <- paste subplace 2 id here
+            -- SUBPLACE_ID_3,  -- <- paste subplace 3 id here
+        },
+        -- gameId = 0000000000, -- optional: auto-match ALL subplaces
         script = House_of_the_Locust_Script,
     },
-    [134208374070897,10624691669,10624691669] = { -- Monochrome
+    {
         title  = "Monochrome",
-        page   = "https://www.roblox.com/games/134208374070897/MONOCHROME",
+        ids    = {
+            134208374070897,    -- main game
+            10624691669,        -- subplace 1
+            -- SUBPLACE_ID_2,  -- <- paste subplace 2 id here (you mentioned 2 subplaces)
+        },
+        -- gameId = 0000000000, -- optional: auto-match ALL subplaces
         script = Monochrome_Script,
-    }
+    },
 }
+
+-- =====================================================================
+-- BUILD REVERSE LOOKUP MAPS (do not edit below this line to add games)
+-- =====================================================================
+-- CONFIG[placeId]     -> game entry   (exact PlaceId match)
+-- BY_GAME_ID[gameId]  -> game entry   (universe-wide fallback match)
+local CONFIG = {}
+local BY_GAME_ID = {}
+
+for _, entry in ipairs(GAMES) do
+    for _, id in ipairs(entry.ids) do
+        CONFIG[tonumber(id)] = entry
+    end
+    if entry.gameId then
+        BY_GAME_ID[tonumber(entry.gameId)] = entry
+    end
+end
 
 -- =====================================================================
 -- WAIT FOR GAME TO LOAD / DETECT LOCAL PLAYER & PLACE ID
@@ -76,20 +117,24 @@ if not LocalPlayer then
 end
 
 -- 2. Robustly wait for game to load AND PlaceId to be valid (not 0)
--- Some executors report PlaceId as 0 briefly before it updates to the real ID.
+--    Some executors report PlaceId as 0 briefly before it updates to the real ID.
 repeat
     task.wait(0.1)
 until game:IsLoaded() and game.PlaceId ~= 0
 
--- 3. Ensure it's a number to prevent any weird type mismatches in CONFIG lookup
+-- 3. Ensure numbers to prevent any type mismatches in the lookup
 local currentPlaceId = tonumber(game.PlaceId)
+local currentGameId  = tonumber(game.GameId)
 
-print(("[Aetherist] Environment Ready. PlaceId: %d | Player: %s"):format(currentPlaceId, LocalPlayer.Name))
+print(("[Aetherist] Environment Ready. PlaceId: %d | GameId: %d | Player: %s")
+    :format(currentPlaceId, currentGameId, LocalPlayer.Name))
 
 -- =====================================================================
 -- RESOLVE SCRIPT (game-specific or local Universal fallback)
 -- =====================================================================
-local data = CONFIG[currentPlaceId]
+-- 1) exact PlaceId match (main game or a listed subplace)
+-- 2) universe GameId match (covers every subplace when gameId is set)
+local data = CONFIG[currentPlaceId] or BY_GAME_ID[currentGameId]
 local scriptSource
 
 if data then
