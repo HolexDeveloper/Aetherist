@@ -1,6 +1,6 @@
 -- ============================================
--- AETHERIST / DEMON ARENA - STAT TRAIN EDITION
--- Smooth Tween, Auto-Equip, Spam Click, 3D Toggle
+-- AETHERIST / DEMON ARENA - INPUT PATCH
+-- Fixed LMB Spam, Fixed Auto-Equip, Smooth Tween
 -- ============================================
 
 local Players = game:GetService("Players")
@@ -14,7 +14,7 @@ local Camera = workspace.CurrentCamera
 
 -- Singleton Management
 local genv = getgenv and getgenv() or _G
-local SCRIPT_KEY = "Aetherist_StatTrain_V1"
+local SCRIPT_KEY = "Aetherist_InputPatch_V1"
 
 if genv[SCRIPT_KEY] then
     local old = genv[SCRIPT_KEY]
@@ -81,23 +81,22 @@ local function getHumanoid()
     return char and char:FindFirstChildOfClass("Humanoid")
 end
 
--- Smooth Tween (Under 40 Walkspeed equivalent, ~2.5s for moderate distance)
+-- Smooth Tween (Under 40 Walkspeed equivalent)
 local function tweenToTarget(targetPos)
     local hrp = getHRP()
     local hum = getHumanoid()
     if not hrp or not hum then return false end
     
-    -- Ensure Noclip is OFF
     local char = getCharacter()
     if char then
         for _, part in pairs(char:GetDescendants()) do
             if part:IsA("BasePart") then
-                part.CanCollide = true
+                part.CanCollide = true -- Noclip OFF
             end
         end
     end
     
-    hum.WalkSpeed = 16 -- Reset to normal, tween handles the movement
+    hum.WalkSpeed = 16 
     
     local safePos = Vector3.new(targetPos.X, targetPos.Y + 3, targetPos.Z)
     local tweenInfo = TweenInfo.new(2.5, Enum.EasingStyle.Linear, Enum.EasingDirection.Out)
@@ -108,23 +107,42 @@ local function tweenToTarget(targetPos)
     return true
 end
 
--- Tool Equipping Logic
+-- Fixed Auto-Equip Logic
 local function equipStatTool()
     local char = getCharacter()
     local hum = getHumanoid()
     if not char or not hum then return end
-    
+
     local targetName = State.SelectedStat
-    local tool = LocalPlayer.Backpack:FindFirstChild(targetName) or char:FindFirstChild(targetName)
     
-    -- If specific stat tool not found, fallback to first available tool
-    if not tool or not tool:IsA("Tool") then
-        tool = LocalPlayer.Backpack:FindFirstChildWhichIsA("Tool") or char:FindFirstChildWhichIsA("Tool")
+    -- 1. Check Backpack for the specific stat tool
+    local tool = LocalPlayer.Backpack:FindFirstChild(targetName)
+    
+    -- 2. Check Character if not in backpack
+    if not tool then
+        tool = char:FindFirstChild(targetName)
     end
     
-    if tool and tool:IsA("Tool") and tool.Parent ~= char then
-        hum:EquipTool(tool)
+    -- 3. Fallback to first available tool in backpack
+    if not tool then
+        tool = LocalPlayer.Backpack:FindFirstChildWhichIsA("Tool")
     end
+
+    if tool and tool:IsA("Tool") then
+        -- Only equip if it's not already in the character
+        if tool.Parent ~= char then
+            hum:EquipTool(tool)
+        end
+    end
+end
+
+-- Fixed LMB Spam Click (Direct VIM Methods)
+local function performClick()
+    pcall(function()
+        VirtualInputManager:MouseButton1Down(0, 0, game)
+        task.wait(0.05)
+        VirtualInputManager:MouseButton1Up(0, 0, game)
+    end)
 end
 
 -- Silent Anti-AFK
@@ -156,8 +174,6 @@ Script:TrackThread(task.spawn(function()
                 local hrp = getHRP()
                 if not hrp then return end
                 
-                -- Simple logic: if we are far from a boost spot, tween there once
-                -- For this script, we default to 150% Boost Area as the training ground
                 local target = BoostSpots["150% Boost Area"]
                 local dist = (hrp.Position - target).Magnitude
                 
@@ -165,7 +181,6 @@ Script:TrackThread(task.spawn(function()
                     tweenToTarget(target)
                 end
                 
-                -- Ensure tool is equipped immediately after arriving
                 equipStatTool()
             end)
         end
@@ -205,13 +220,12 @@ Script:TrackThread(task.spawn(function()
             pcall(function()
                 local char = getCharacter()
                 local targetName = State.SelectedStat
+                
+                -- Verify tool is actually equipped before clicking
                 local tool = char and char:FindFirstChild(targetName) or char and char:FindFirstChildWhichIsA("Tool")
                 
-                if tool and tool:IsA("Tool") then
-                    local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
-                    VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, true, game, 1)
-                    task.wait(0.05)
-                    VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, false, game, 1)
+                if tool and tool:IsA("Tool") and tool.Parent == char then
+                    performClick()
                 end
             end)
         end
@@ -224,7 +238,7 @@ local Rayfield = loadstring(game:HttpGet("https://raw.githubusercontent.com/Sync
 
 local Window = Rayfield:CreateWindow({
     name = "Aetherist / Demon Arena",
-    subtitle = "Stat Train Edition",
+    subtitle = "Input Patch",
     icon = "dumbbell",
     theme = "default",
     configuration = {
@@ -244,7 +258,7 @@ AutofarmTab:CreateDropdown({
     flag = "SelectedStat",
     callback = function(choice)
         State.SelectedStat = choice
-        equipStatTool() -- Re-equip immediately on change
+        equipStatTool() 
     end,
 })
 
@@ -252,7 +266,7 @@ AutofarmTab:CreateToggle({
     name = "Activate Stat Autofarm",
     value = false,
     flag = "AutoFarmActive",
-    description = "Tweens to training area, equips tool, and spam clicks.",
+    description = "Tweens to area, equips tool, spam clicks LMB.",
     callback = function(value)
         State.AutoFarmActive = value
         if value then
@@ -304,9 +318,9 @@ AutofarmTab:CreateToggle({
 
 Window:Notify({
     title = "4080 Initialized",
-    content = "Stat training loop active. Smooth tweens engaged.",
+    content = "Input layer patched. LMB and Equip locked in.",
     duration = 4,
     icon = "dumbbell",
 })
 
-print("[Aetherist] Stat Train Edition loaded. Noclip OFF. Sounds intact.")
+print("[Aetherist] Input Patch loaded. LMB and Equip fixed.")
