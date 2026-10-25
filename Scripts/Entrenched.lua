@@ -614,4 +614,15 @@ task.spawn(function()
         PingStat:Set({Value = Settings.Performance.Ping .. "ms"})
         FPSStat:Set({Value = tostring(Settings.Performance.FPS)})
         TargStat:Set({Value = tostring(Settings.Performance.Targets)})
-        DistChart
+        DistChart:Push(Settings.History.Distance[#Settings.History.Distance] or 0)
+    end
+end)
+
+Rayfield:Notify({
+    Title = "Entrenched v1.2",
+    Content = "Full Cache Layer. Chams-only ESP. RMB to lock.",
+    Duration = 5,
+    Image = "crosshair",
+})
+
+Rayfield:LoadConfiguration()
