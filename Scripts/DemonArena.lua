@@ -1,20 +1,19 @@
 -- ============================================
--- AETHERIST / DEMON ARENA - INPUT PATCH
--- Fixed LMB Spam, Fixed Auto-Equip, Smooth Tween
+-- AETHERIST / DEMON ARENA - VIM EDITION
+-- VirtualInputManager for Clicks, Equip, Anti-AFK
 -- ============================================
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
-local VirtualUser = game:GetService("VirtualUser")
 
 local LocalPlayer = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
 
 -- Singleton Management
 local genv = getgenv and getgenv() or _G
-local SCRIPT_KEY = "Aetherist_InputPatch_V1"
+local SCRIPT_KEY = "Aetherist_VIM_V1"
 
 if genv[SCRIPT_KEY] then
     local old = genv[SCRIPT_KEY]
@@ -59,8 +58,7 @@ end
 -- State
 local State = {
     AutoFarmActive = false,
-    SelectedStat = "Attack",
-    ClickDelay = 0.30,
+    SelectedSpot = "150% Boost Area",
     Disable3DRendering = false,
     SilentAntiAFK = false,
 }
@@ -79,6 +77,34 @@ end
 local function getHumanoid()
     local char = getCharacter()
     return char and char:FindFirstChildOfClass("Humanoid")
+end
+
+-- VIM Actions
+local function performClick()
+    pcall(function()
+        local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+        VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, true, game, 1)
+        task.wait(0.05)
+        VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, false, game, 1)
+    end)
+end
+
+local function performEquip()
+    pcall(function()
+        -- Simulate pressing '1' to equip the first tool
+        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.One, false, game)
+        task.wait(0.05)
+        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.One, false, game)
+    end)
+end
+
+local function performAntiAfk()
+    pcall(function()
+        -- Simulate a harmless key press to reset AFK timer
+        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.RightShift, false, game)
+        task.wait(0.05)
+        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.RightShift, false, game)
+    end)
 end
 
 -- Smooth Tween (Under 40 Walkspeed equivalent)
@@ -107,66 +133,7 @@ local function tweenToTarget(targetPos)
     return true
 end
 
--- Fixed Auto-Equip Logic
-local function equipStatTool()
-    local char = getCharacter()
-    local hum = getHumanoid()
-    if not char or not hum then return end
-
-    local targetName = State.SelectedStat
-    
-    -- 1. Check Backpack for the specific stat tool
-    local tool = LocalPlayer.Backpack:FindFirstChild(targetName)
-    
-    -- 2. Check Character if not in backpack
-    if not tool then
-        tool = char:FindFirstChild(targetName)
-    end
-    
-    -- 3. Fallback to first available tool in backpack
-    if not tool then
-        tool = LocalPlayer.Backpack:FindFirstChildWhichIsA("Tool")
-    end
-
-    if tool and tool:IsA("Tool") then
-        -- Only equip if it's not already in the character
-        if tool.Parent ~= char then
-            hum:EquipTool(tool)
-        end
-    end
-end
-
--- Fixed LMB Spam Click (Direct VIM Methods)
-local function performClick()
-    pcall(function()
-        VirtualInputManager:MouseButton1Down(0, 0, game)
-        task.wait(0.05)
-        VirtualInputManager:MouseButton1Up(0, 0, game)
-    end)
-end
-
--- Silent Anti-AFK
-local antiAfkThread = nil
-local function toggleSilentAntiAFK(state)
-    if state then
-        antiAfkThread = Script:TrackThread(task.spawn(function()
-            while State.SilentAntiAFK and Script.Active do
-                pcall(function()
-                    VirtualUser:CaptureController()
-                    VirtualUser:ClickButton2(Vector2.new(0, 0))
-                end)
-                task.wait(120)
-            end
-        end))
-    else
-        if antiAfkThread then
-            pcall(task.cancel, antiAfkThread)
-            antiAfkThread = nil
-        end
-    end
-end
-
--- Main Loop: Positioning & Maintenance
+-- Main Loop: Positioning
 Script:TrackThread(task.spawn(function()
     while Script.Active do
         if State.AutoFarmActive then
@@ -174,14 +141,13 @@ Script:TrackThread(task.spawn(function()
                 local hrp = getHRP()
                 if not hrp then return end
                 
-                local target = BoostSpots["150% Boost Area"]
-                local dist = (hrp.Position - target).Magnitude
+                local target = BoostSpots[State.SelectedSpot]
+                if not target then return end
                 
+                local dist = (hrp.Position - target).Magnitude
                 if dist > 15 then
                     tweenToTarget(target)
                 end
-                
-                equipStatTool()
             end)
         end
         task.wait(1)
@@ -194,18 +160,17 @@ Script:TrackThread(task.spawn(function()
         if State.AutoFarmActive then
             pcall(function()
                 local char = getCharacter()
-                local targetName = State.SelectedStat
                 local hasToolEquipped = false
                 
                 if char then
-                    local tool = char:FindFirstChild(targetName) or char:FindFirstChildWhichIsA("Tool")
-                    if tool and tool:IsA("Tool") then
+                    local tool = char:FindFirstChildWhichIsA("Tool")
+                    if tool then
                         hasToolEquipped = true
                     end
                 end
                 
                 if not hasToolEquipped then
-                    equipStatTool()
+                    performEquip()
                 end
             end)
         end
@@ -213,23 +178,32 @@ Script:TrackThread(task.spawn(function()
     end
 end))
 
--- Spam Click Loop
+-- Spam Click Loop (0.30s delay)
 Script:TrackThread(task.spawn(function()
     while Script.Active do
         if State.AutoFarmActive then
             pcall(function()
                 local char = getCharacter()
-                local targetName = State.SelectedStat
+                local tool = char and char:FindFirstChildWhichIsA("Tool")
                 
-                -- Verify tool is actually equipped before clicking
-                local tool = char and char:FindFirstChild(targetName) or char and char:FindFirstChildWhichIsA("Tool")
-                
-                if tool and tool:IsA("Tool") and tool.Parent == char then
+                if tool and tool.Parent == char then
                     performClick()
                 end
             end)
         end
-        task.wait(State.ClickDelay)
+        task.wait(0.30)
+    end
+end))
+
+-- Silent Anti-AFK Loop
+Script:TrackThread(task.spawn(function()
+    while Script.Active do
+        if State.SilentAntiAFK then
+            pcall(function()
+                performAntiAfk()
+            end)
+        end
+        task.wait(120)
     end
 end))
 
@@ -238,8 +212,8 @@ local Rayfield = loadstring(game:HttpGet("https://raw.githubusercontent.com/Sync
 
 local Window = Rayfield:CreateWindow({
     name = "Aetherist / Demon Arena",
-    subtitle = "Input Patch",
-    icon = "dumbbell",
+    subtitle = "VIM Edition",
+    icon = "bot",
     theme = "default",
     configuration = {
         autoSave = false,
@@ -247,52 +221,37 @@ local Window = Rayfield:CreateWindow({
     },
 })
 
+-- AUTOFARM TAB (Stripped)
 local AutofarmTab = Window:CreateTab({ name = "Autofarm", icon = "bot" })
 
-AutofarmTab:CreateSection({ name = "Training Configuration" })
+AutofarmTab:CreateSection({ name = "Configuration" })
 
 AutofarmTab:CreateDropdown({
-    name = "Stat to Train",
-    options = {"Attack", "Health", "Defense", "Pierce"},
-    value = "Attack",
-    flag = "SelectedStat",
+    name = "Select Spot",
+    options = {"150% Boost Area", "300% Boost Area"},
+    value = "150% Boost Area",
+    flag = "SelectedSpot",
     callback = function(choice)
-        State.SelectedStat = choice
-        equipStatTool() 
+        State.SelectedSpot = choice
     end,
 })
 
 AutofarmTab:CreateToggle({
-    name = "Activate Stat Autofarm",
+    name = "Activate Autofarm",
     value = false,
     flag = "AutoFarmActive",
-    description = "Tweens to area, equips tool, spam clicks LMB.",
+    description = "Caution: You must equip the tool you want to farm with first.",
     callback = function(value)
         State.AutoFarmActive = value
-        if value then
-            equipStatTool()
-        end
     end,
 })
 
-AutofarmTab:CreateSection({ name = "Click Settings" })
+-- EXTRAS TAB
+local ExtrasTab = Window:CreateTab({ name = "Extras", icon = "settings" })
 
-AutofarmTab:CreateSlider({
-    name = "Spam Click Delay",
-    range = {0.05, 0.50},
-    increment = 0.01,
-    suffix = "s",
-    value = 0.30,
-    flag = "ClickDelay",
-    description = "Lower = faster clicks. 0.30s is standard safe speed.",
-    callback = function(value)
-        State.ClickDelay = value
-    end,
-})
+ExtrasTab:CreateSection({ name = "Utilities" })
 
-AutofarmTab:CreateSection({ name = "AFK Utilities" })
-
-AutofarmTab:CreateToggle({
+ExtrasTab:CreateToggle({
     name = "Disable 3D Rendering",
     value = false,
     flag = "Disable3DRendering",
@@ -305,22 +264,21 @@ AutofarmTab:CreateToggle({
     end,
 })
 
-AutofarmTab:CreateToggle({
+ExtrasTab:CreateToggle({
     name = "Silent Anti-AFK",
     value = false,
     flag = "SilentAntiAFK",
-    description = "Silently prevents Roblox idle disconnects in the background.",
+    description = "Uses VirtualInputManager to silently prevent idle disconnects.",
     callback = function(value)
         State.SilentAntiAFK = value
-        toggleSilentAntiAFK(value)
     end,
 })
 
 Window:Notify({
     title = "4080 Initialized",
-    content = "Input layer patched. LMB and Equip locked in.",
+    content = "VIM wired. UI stripped. Extras tab ready.",
     duration = 4,
-    icon = "dumbbell",
+    icon = "bot",
 })
 
-print("[Aetherist] Input Patch loaded. LMB and Equip fixed.")
+print("[Aetherist] VIM Edition loaded. All inputs routed through VirtualInputManager.")
