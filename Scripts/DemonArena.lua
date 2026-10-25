@@ -1,6 +1,6 @@
 -- ============================================
--- AETHERIST / DEMON ARENA - EQUIP LOCK & VIM CLICK
--- Direct Equip Forcing, VIM Left Click Spam
+-- AETHERIST / DEMON ARENA - SIGNAL EDITION
+-- firesignal Auto-Clicker, No Auto-Equip, Tweening
 -- ============================================
 
 local Players = game:GetService("Players")
@@ -9,11 +9,10 @@ local TweenService = game:GetService("TweenService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 
 local LocalPlayer = Players.LocalPlayer
-local Camera = workspace.CurrentCamera
 
 -- Singleton Management
 local genv = getgenv and getgenv() or _G
-local SCRIPT_KEY = "Aetherist_EquipLock_V1"
+local SCRIPT_KEY = "Aetherist_Signal_V1"
 
 if genv[SCRIPT_KEY] then
     local old = genv[SCRIPT_KEY]
@@ -79,13 +78,17 @@ local function getHumanoid()
     return char and char:FindFirstChildOfClass("Humanoid")
 end
 
--- VIM Actions
+-- firesignal Auto-Clicker (Rapid Tool Activation)
 local function performClick()
     pcall(function()
-        local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
-        VirtualInputManager:MouseButton1Down(center.X, center.Y, game)
-        task.wait(0.02)
-        VirtualInputManager:MouseButton1Up(center.X, center.Y, game)
+        local char = getCharacter()
+        if not char then return end
+        
+        local tool = char:FindFirstChildWhichIsA("Tool")
+        if tool then
+            -- Directly fires the Activated signal on the tool
+            firesignal(tool.Activated)
+        end
     end)
 end
 
@@ -95,26 +98,6 @@ local function performAntiAfk()
         task.wait(0.05)
         VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.RightShift, false, game)
     end)
-end
-
--- Direct Equip Forcing (Bypasses hotkey toggle unequip)
-local function forceEquipTool()
-    local char = getCharacter()
-    local hum = getHumanoid()
-    if not char or not hum then return end
-    
-    -- Find the tool in backpack or character
-    local tool = LocalPlayer.Backpack:FindFirstChildWhichIsA("Tool")
-    if not tool then
-        tool = char:FindFirstChildWhichIsA("Tool")
-    end
-    
-    if tool and tool:IsA("Tool") then
-        -- If it's in the backpack, equip it directly via Humanoid
-        if tool.Parent == LocalPlayer.Backpack then
-            pcall(function() hum:EquipTool(tool) end)
-        end
-    end
 end
 
 -- Smooth Tween (Under 40 Walkspeed equivalent)
@@ -164,23 +147,13 @@ Script:TrackThread(task.spawn(function()
     end
 end))
 
--- Rapid Equip Verification Loop (Every 0.2s to outpace game unequip scripts)
-Script:TrackThread(task.spawn(function()
-    while Script.Active do
-        if State.AutoFarmActive then
-            pcall(forceEquipTool)
-        end
-        task.wait(0.2)
-    end
-end))
-
--- Spam Click Loop
+-- Rapid firesignal Click Loop
 Script:TrackThread(task.spawn(function()
     while Script.Active do
         if State.AutoFarmActive then
             pcall(performClick)
         end
-        task.wait(0.05) -- Fast spam for training speedup
+        task.wait(0.05) -- Extremely rapid since it's direct signal firing
     end
 end))
 
@@ -199,7 +172,7 @@ local Rayfield = loadstring(game:HttpGet("https://raw.githubusercontent.com/Sync
 
 local Window = Rayfield:CreateWindow({
     name = "Aetherist / Demon Arena",
-    subtitle = "Equip Lock Edition",
+    subtitle = "Signal Edition",
     icon = "bot",
     theme = "default",
     configuration = {
@@ -208,7 +181,7 @@ local Window = Rayfield:CreateWindow({
     },
 })
 
--- AUTOFARM TAB (Stripped)
+-- AUTOFARM TAB
 local AutofarmTab = Window:CreateTab({ name = "Autofarm", icon = "bot" })
 
 AutofarmTab:CreateSection({ name = "Configuration" })
@@ -227,12 +200,9 @@ AutofarmTab:CreateToggle({
     name = "Activate Autofarm",
     value = false,
     flag = "AutoFarmActive",
-    description = "Caution: You must equip the tool you want to farm with first. Script will lock it in hand and spam LMB.",
+    description = "Caution! u have to equip the Stat You wanna Train first Attack,Health,Defense,Pierce",
     callback = function(value)
         State.AutoFarmActive = value
-        if value then
-            forceEquipTool()
-        end
     end,
 })
 
@@ -266,9 +236,9 @@ ExtrasTab:CreateToggle({
 
 Window:Notify({
     title = "4080 Initialized",
-    content = "Equip locked. LMB spam active. UI stripped.",
+    content = "firesignal wired. UI stripped. Extras tab ready.",
     duration = 4,
     icon = "bot",
 })
 
-print("[Aetherist] Equip Lock Edition loaded. Tool forced in hand.")
+print("[Aetherist] Signal Edition loaded. firesignal auto-clicker active.")
