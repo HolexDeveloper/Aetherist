@@ -1,18 +1,20 @@
 -- ============================================
--- AETHERIST / DEMON ARENA - TWEEN AFK EDITION
--- Tweening, 3D Render Toggle, Silent Anti-AFK
+-- AETHERIST / DEMON ARENA - STAT TRAIN EDITION
+-- Smooth Tween, Auto-Equip, Spam Click, 3D Toggle
 -- ============================================
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
 local VirtualUser = game:GetService("VirtualUser")
 
 local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
 
 -- Singleton Management
 local genv = getgenv and getgenv() or _G
-local SCRIPT_KEY = "Aetherist_TweenAFK_V1"
+local SCRIPT_KEY = "Aetherist_StatTrain_V1"
 
 if genv[SCRIPT_KEY] then
     local old = genv[SCRIPT_KEY]
@@ -51,17 +53,16 @@ function Script:Cleanup()
     table.clear(self.Threads)
     genv[SCRIPT_KEY] = nil
     
-    -- Restore 3D rendering on cleanup
     pcall(function() RunService:Set3dRenderingEnabled(true) end)
 end
 
 -- State
 local State = {
     AutoFarmActive = false,
-    SelectedTarget = "Nearest Honor Ball",
+    SelectedStat = "Attack",
+    ClickDelay = 0.30,
     Disable3DRendering = false,
     SilentAntiAFK = false,
-    HonorFarmed = 0,
 }
 
 local BoostSpots = {
@@ -80,70 +81,53 @@ local function getHumanoid()
     return char and char:FindFirstChildOfClass("Humanoid")
 end
 
-local function isInSafeZone(obj)
-    local check = obj.Parent
-    while check do
-        local lowerName = check.Name:lower()
-        if lowerName:find("safe") or lowerName:find("spawn") or 
-           lowerName:find("camp") or lowerName:find("town") then
-            return true
-        end
-        check = check.Parent
-    end
-    return false
-end
-
--- Tween Logic (Noclip OFF, prevents floor clipping with Y offset)
-local function tweenTo(targetPos)
+-- Smooth Tween (Under 40 Walkspeed equivalent, ~2.5s for moderate distance)
+local function tweenToTarget(targetPos)
     local hrp = getHRP()
     local hum = getHumanoid()
     if not hrp or not hum then return false end
     
-    -- Force walkspeed context, ensure Noclip is strictly OFF
-    hum.WalkSpeed = 30
+    -- Ensure Noclip is OFF
     local char = getCharacter()
     if char then
         for _, part in pairs(char:GetDescendants()) do
             if part:IsA("BasePart") then
-                part.CanCollide = true -- Noclip OFF
+                part.CanCollide = true
             end
         end
     end
     
-    -- Add slight Y offset to prevent floor clipping during tween
-    local safeTargetPos = Vector3.new(targetPos.X, targetPos.Y + 3, targetPos.Z)
-    local targetCFrame = CFrame.new(safeTargetPos)
+    hum.WalkSpeed = 16 -- Reset to normal, tween handles the movement
     
+    local safePos = Vector3.new(targetPos.X, targetPos.Y + 3, targetPos.Z)
     local tweenInfo = TweenInfo.new(2.5, Enum.EasingStyle.Linear, Enum.EasingDirection.Out)
-    local tween = TweenService:Create(hrp, tweenInfo, {CFrame = targetCFrame})
+    local tween = TweenService:Create(hrp, tweenInfo, {CFrame = CFrame.new(safePos)})
     
     tween:Play()
     tween.Completed:Wait()
     return true
 end
 
-local function findNearestHonorBall()
-    local hrp = getHRP()
-    if not hrp then return nil end
+-- Tool Equipping Logic
+local function equipStatTool()
+    local char = getCharacter()
+    local hum = getHumanoid()
+    if not char or not hum then return end
     
-    local nearestBall = nil
-    local minDist = 500
+    local targetName = State.SelectedStat
+    local tool = LocalPlayer.Backpack:FindFirstChild(targetName) or char:FindFirstChild(targetName)
     
-    for _, obj in pairs(workspace:GetDescendants()) do
-        if obj:IsA("BasePart") and (obj.Name == "HonorBall" or obj.Name:lower():find("honor")) then
-            if not isInSafeZone(obj) then
-                local dist = (obj.Position - hrp.Position).Magnitude
-                if dist < minDist then
-                    minDist = dist
-                    nearestBall = obj
-                end
-            end
-        end
+    -- If specific stat tool not found, fallback to first available tool
+    if not tool or not tool:IsA("Tool") then
+        tool = LocalPlayer.Backpack:FindFirstChildWhichIsA("Tool") or char:FindFirstChildWhichIsA("Tool")
     end
-    return nearestBall
+    
+    if tool and tool:IsA("Tool") and tool.Parent ~= char then
+        hum:EquipTool(tool)
+    end
 end
 
--- Silent Anti-AFK Thread
+-- Silent Anti-AFK
 local antiAfkThread = nil
 local function toggleSilentAntiAFK(state)
     if state then
@@ -153,7 +137,7 @@ local function toggleSilentAntiAFK(state)
                     VirtualUser:CaptureController()
                     VirtualUser:ClickButton2(Vector2.new(0, 0))
                 end)
-                task.wait(120) -- Trigger every 2 minutes
+                task.wait(120)
             end
         end))
     else
@@ -164,54 +148,84 @@ local function toggleSilentAntiAFK(state)
     end
 end
 
--- Main Farm Loop
+-- Main Loop: Positioning & Maintenance
 Script:TrackThread(task.spawn(function()
     while Script.Active do
         if State.AutoFarmActive then
             pcall(function()
-                local targetPos = nil
+                local hrp = getHRP()
+                if not hrp then return end
                 
-                if State.SelectedTarget == "150% Boost Area" then
-                    targetPos = BoostSpots["150% Boost Area"]
-                elseif State.SelectedTarget == "300% Boost Area" then
-                    targetPos = BoostSpots["300% Boost Area"]
-                else
-                    local ball = findNearestHonorBall()
-                    if ball then
-                        targetPos = ball.Position
-                    end
+                -- Simple logic: if we are far from a boost spot, tween there once
+                -- For this script, we default to 150% Boost Area as the training ground
+                local target = BoostSpots["150% Boost Area"]
+                local dist = (hrp.Position - target).Magnitude
+                
+                if dist > 15 then
+                    tweenToTarget(target)
                 end
                 
-                if targetPos then
-                    local success = tweenTo(targetPos)
-                    if success and State.SelectedTarget == "Nearest Honor Ball" then
-                        task.wait(0.2)
-                        local hrp = getHRP()
-                        if hrp then
-                            for _, v in pairs(workspace:GetDescendants()) do
-                                if v:IsA("ClickDetector") and (v.Parent.Name == "HonorBall" or v.Parent.Name:lower():find("honor")) then
-                                    if (v.Parent.Position - hrp.Position).Magnitude < 10 then
-                                        fireclickdetector(v)
-                                    end
-                                end
-                            end
-                        end
-                        State.HonorFarmed = State.HonorFarmed + 10
-                    end
-                end
+                -- Ensure tool is equipped immediately after arriving
+                equipStatTool()
             end)
         end
-        task.wait(0.5)
+        task.wait(1)
     end
 end))
 
--- UI Generation (Rayfield Gen 2 Fanmade)
+-- Equip Verification Loop (Every 3 seconds)
+Script:TrackThread(task.spawn(function()
+    while Script.Active do
+        if State.AutoFarmActive then
+            pcall(function()
+                local char = getCharacter()
+                local targetName = State.SelectedStat
+                local hasToolEquipped = false
+                
+                if char then
+                    local tool = char:FindFirstChild(targetName) or char:FindFirstChildWhichIsA("Tool")
+                    if tool and tool:IsA("Tool") then
+                        hasToolEquipped = true
+                    end
+                end
+                
+                if not hasToolEquipped then
+                    equipStatTool()
+                end
+            end)
+        end
+        task.wait(3)
+    end
+end))
+
+-- Spam Click Loop
+Script:TrackThread(task.spawn(function()
+    while Script.Active do
+        if State.AutoFarmActive then
+            pcall(function()
+                local char = getCharacter()
+                local targetName = State.SelectedStat
+                local tool = char and char:FindFirstChild(targetName) or char and char:FindFirstChildWhichIsA("Tool")
+                
+                if tool and tool:IsA("Tool") then
+                    local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+                    VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, true, game, 1)
+                    task.wait(0.05)
+                    VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, false, game, 1)
+                end
+            end)
+        end
+        task.wait(State.ClickDelay)
+    end
+end))
+
+-- UI Generation (Rayfield Gen 2)
 local Rayfield = loadstring(game:HttpGet("https://raw.githubusercontent.com/SyncUnofficial/Rayfield_Gen_2_fanmade/main/source.lua"))()
 
 local Window = Rayfield:CreateWindow({
     name = "Aetherist / Demon Arena",
-    subtitle = "Tween AFK Edition",
-    icon = "bot",
+    subtitle = "Stat Train Edition",
+    icon = "dumbbell",
     theme = "default",
     configuration = {
         autoSave = false,
@@ -219,32 +233,46 @@ local Window = Rayfield:CreateWindow({
     },
 })
 
--- ONLY ONE TAB
 local AutofarmTab = Window:CreateTab({ name = "Autofarm", icon = "bot" })
 
-AutofarmTab:CreateSection({ name = "Configuration" })
+AutofarmTab:CreateSection({ name = "Training Configuration" })
 
 AutofarmTab:CreateDropdown({
-    name = "Select Target",
-    options = {"Nearest Honor Ball", "150% Boost Area", "300% Boost Area"},
-    value = "Nearest Honor Ball",
-    flag = "TargetSpot",
+    name = "Stat to Train",
+    options = {"Attack", "Health", "Defense", "Pierce"},
+    value = "Attack",
+    flag = "SelectedStat",
     callback = function(choice)
-        State.SelectedTarget = choice
+        State.SelectedStat = choice
+        equipStatTool() -- Re-equip immediately on change
     end,
 })
 
 AutofarmTab:CreateToggle({
-    name = "Activate Autofarm (Tween)",
+    name = "Activate Stat Autofarm",
     value = false,
     flag = "AutoFarmActive",
-    description = "Smooth tweens to target. Noclip is OFF. Sounds remain active.",
+    description = "Tweens to training area, equips tool, and spam clicks.",
     callback = function(value)
         State.AutoFarmActive = value
-        if not value then
-            local hum = getHumanoid()
-            if hum then hum.WalkSpeed = 16 end
+        if value then
+            equipStatTool()
         end
+    end,
+})
+
+AutofarmTab:CreateSection({ name = "Click Settings" })
+
+AutofarmTab:CreateSlider({
+    name = "Spam Click Delay",
+    range = {0.05, 0.50},
+    increment = 0.01,
+    suffix = "s",
+    value = 0.30,
+    flag = "ClickDelay",
+    description = "Lower = faster clicks. 0.30s is standard safe speed.",
+    callback = function(value)
+        State.ClickDelay = value
     end,
 })
 
@@ -254,7 +282,7 @@ AutofarmTab:CreateToggle({
     name = "Disable 3D Rendering",
     value = false,
     flag = "Disable3DRendering",
-    description = "Drops FPS to near zero for ultimate AFK performance. Re-enables on disable.",
+    description = "Drops FPS to near zero for ultimate AFK performance.",
     callback = function(value)
         State.Disable3DRendering = value
         pcall(function()
@@ -276,9 +304,9 @@ AutofarmTab:CreateToggle({
 
 Window:Notify({
     title = "4080 Initialized",
-    content = "Tweening active. 3D render toggle ready. Anti-AFK silent.",
+    content = "Stat training loop active. Smooth tweens engaged.",
     duration = 4,
-    icon = "bot",
+    icon = "dumbbell",
 })
 
-print("[Aetherist] Tween AFK Edition loaded. Noclip OFF. Sounds intact.")
+print("[Aetherist] Stat Train Edition loaded. Noclip OFF. Sounds intact.")
