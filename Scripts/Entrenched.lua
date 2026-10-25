@@ -99,7 +99,7 @@ local Rayfield = loadstring(game:HttpGet("https://raw.githubusercontent.com/Sync
 
 local Window = Rayfield:CreateWindow({
     Name = "Entrenched | Combat Suite",
-    Subtitle = "v1.2 Rat-Optimized",
+    Subtitle = "v1.2",
     Icon = "crosshair",
     Badge = {Text = "v1.2", Icon = "shield"},
     LoadingTitle = "Entrenched",
@@ -148,6 +148,64 @@ local colorMap = {
 local ESP_Objects = {}
 local ESP_Array = {}
 
+-- CACHE LAYER
+local PlayerCache = {}
+local CacheLastUpdate = 0
+local CACHE_INTERVAL = 30
+
+local function CachePlayer(player)
+    if player == LocalPlayer then return end
+    
+    local char = player.Character
+    if not char then return end
+    
+    local hum = char:FindFirstChild("Humanoid")
+    local root = char:FindFirstChild("HumanoidRootPart")
+    local head = char:FindFirstChild("Head")
+    local upperTorso = char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso")
+    
+    PlayerCache[player] = {
+        Character = char,
+        Humanoid = hum,
+        RootPart = root,
+        Head = head,
+        UpperTorso = upperTorso,
+        Team = player.Team,
+        Alive = hum and hum.Health > 0
+    }
+end
+
+local function RebuildCache()
+    table.clear(PlayerCache)
+    for _, player in ipairs(Players:GetPlayers()) do
+        CachePlayer(player)
+    end
+    CacheLastUpdate = os.clock()
+end
+
+-- Initial cache build
+RebuildCache()
+
+-- Recache every 30 seconds
+task.spawn(function()
+    while true do
+        task.wait(CACHE_INTERVAL)
+        RebuildCache()
+    end
+end)
+
+-- Also recache on character added/removed for immediate updates
+Players.PlayerAdded:Connect(function(player)
+    player.CharacterAdded:Connect(function()
+        task.wait(0.5)
+        CachePlayer(player)
+    end)
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    PlayerCache[player] = nil
+end)
+
 local SharedRaycastParams = RaycastParams.new()
 SharedRaycastParams.FilterType = Enum.RaycastFilterType.Exclude
 SharedRaycastParams.IgnoreWater = true
@@ -180,6 +238,7 @@ local function CreateESP(player)
         if newChar and ESP_Objects[player] then
             ESP_Objects[player].Highlight.Adornee = newChar
             ESP_Objects[player].Highlight.Parent = newChar
+            CachePlayer(player)
         end
     end)
 end
@@ -198,14 +257,14 @@ local function UpdateESP()
     for i = 1, #ESP_Array do
         local obj = ESP_Array[i]
         local player = obj.Player
-        local char = player.Character
+        local cache = PlayerCache[player]
         
-        if char then
-            local hum = char:FindFirstChild("Humanoid")
-            local root = char:FindFirstChild("HumanoidRootPart")
+        if cache and cache.Character then
+            local hum = cache.Humanoid
+            local root = cache.RootPart
 
             local isEnemy = true
-            if teamCheck and player.Team == localTeam then
+            if teamCheck and cache.Team == localTeam then
                 isEnemy = false
             end
 
@@ -292,12 +351,20 @@ local function GetClosestTarget()
     for i = 1, #ESP_Array do
         local obj = ESP_Array[i]
         local player = obj.Player
+        local cache = PlayerCache[player]
         
-        if not (teamCheck and player.Team == localTeam) then
-            local char = player.Character
-            if char then
-                local part = char:FindFirstChild(targetPartName) or char:FindFirstChild("HumanoidRootPart")
-                local hum = char:FindFirstChild("Humanoid")
+        if cache and cache.Character then
+            if not (teamCheck and cache.Team == localTeam) then
+                local part = nil
+                if targetPartName == "Head" then
+                    part = cache.Head
+                elseif targetPartName == "UpperTorso" then
+                    part = cache.UpperTorso
+                else
+                    part = cache.RootPart
+                end
+                
+                local hum = cache.Humanoid
 
                 if part and hum and hum.Health > 0 then
                     local rawDir = part.Position - camPos
@@ -309,7 +376,7 @@ local function GetClosestTarget()
                             local distSq = dx*dx + dy*dy
                             if distSq < shortestSq then
                                 if wallCheck then
-                                    if CheckVisibility(camPos, part.Position, char) then
+                                    if CheckVisibility(camPos, part.Position, cache.Character) then
                                         shortestSq = distSq
                                         closest = player
                                         closestPart = part
@@ -547,15 +614,4 @@ task.spawn(function()
         PingStat:Set({Value = Settings.Performance.Ping .. "ms"})
         FPSStat:Set({Value = tostring(Settings.Performance.FPS)})
         TargStat:Set({Value = tostring(Settings.Performance.Targets)})
-        DistChart:Push(Settings.History.Distance[#Settings.History.Distance] or 0)
-    end
-end)
-
-Rayfield:Notify({
-    Title = "Entrenched v1.2",
-    Content = "Bare Metal Optimization. Chams-only ESP. RMB to lock.",
-    Duration = 5,
-    Image = "crosshair",
-})
-
-Rayfield:LoadConfiguration()
+        DistChart
