@@ -126,7 +126,7 @@ local Settings = {
         Smoothness = 30,
         TargetPart = "Head",
         WallCheck = true,
-        Prediction = 0.165,
+        -- Prediction removed
     },
     Performance = {
         Ping = 0,
@@ -410,8 +410,7 @@ local function UpdateAimbot(dt)
         local target, targetPart = GetClosestTarget()
         if target and targetPart then
             local targetPos = targetPart.Position
-            local vel = targetPart.AssemblyLinearVelocity or targetPart.Velocity
-            targetPos = targetPos + vel * Settings.Aimbot.Prediction
+            -- Prediction math removed entirely
 
             local currentCF = Camera.CFrame
             local targetCF = CFrame.lookAt(currentCF.Position, targetPos)
@@ -521,15 +520,7 @@ HomeTab:CreateSlider({
     Callback = function(v) Settings.Aimbot.Smoothness = v end,
 })
 
-HomeTab:CreateSlider({
-    Name = "Prediction Factor",
-    Range = {0, 500},
-    Increment = 5,
-    Suffix = "ms",
-    CurrentValue = math.floor(Settings.Aimbot.Prediction * 1000),
-    Flag = "AimbotPrediction",
-    Callback = function(v) Settings.Aimbot.Prediction = v / 1000 end,
-})
+-- Prediction slider removed
 
 HomeTab:CreateDropdown({
     Name = "Target Part",
