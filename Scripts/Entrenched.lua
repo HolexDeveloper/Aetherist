@@ -1,17 +1,17 @@
 --[[
     Entrenched | Combat Suite v1.3
     --------------------------------------------------------------
-      * Aimbot and triggerbot removed
-      * SILENT AIM (real, server-side) - rewrites the aim position of
-        ServerEvents.Shoot, camera never moves, own FOV circle
-      * Exploit set: Rapid Fire, Instant Reload, No Recoil, No Spread,
-        Instant Revive, all driven off the captured weapon state table
-      * Enemy-only ESP, team read live (fixes stale cache showing mates)
+      * SILENT AIM (real): Crosshair hook decides the aim point before
+        Shoot builds its raycasts, remote rewrite forces the damage
+        payload. hookmetamethod with a verified fallback.
+      * Exploits: Rapid Fire, Instant Reload, No Recoil, No Spread,
+        Instant Revive, driven off the captured weapon state
+      * Enemy-only ESP, team read live
       * Ban status parsed correctly -> "Banned" / "Safe"
-      * Tracers/boxes/etc. hide instantly when their toggle goes off
-      * Chunked frustum + distance culling with a transition budget
-      * Perf: highlight cap, drawing reuse, ring buffer, hook only
-        installed while silent aim is on, FPS uncap via RunService
+      * Overlays hide instantly when their toggle goes off
+      * Chunked frustum + distance culling, budgeted
+      * Perf: highlight cap, drawing reuse, ring buffer, hooks only
+        installed while silent aim is on
     --------------------------------------------------------------
 ]]
 
@@ -45,9 +45,9 @@ local math_floor = math.floor
 local math_clamp = math.clamp
 local math_abs   = math.abs
 local math_max   = math.max
+local math_min   = math.min
 local math_rad   = math.rad
 local math_tan   = math.tan
-local math_huge  = math.huge
 
 local function RefreshCamera()
     local cam = workspace.CurrentCamera
@@ -308,7 +308,7 @@ local function ResetCulling()
 end
 
 -- ============================================================
--- Drawing
+-- Drawing + UI
 -- ============================================================
 local DrawingEnabled = pcall(function()
     local t = Drawing.new("Line"); t:Remove()
@@ -535,7 +535,6 @@ local lastESP = 0
 local candObj, candDist = {}, {}
 
 local function UpdateESP()
-    local localTeam = LocalPlayer.Team
     local col = colorMap[Settings.ESP.Color] or colorMap.Red
     local fillT = Settings.ESP.FillTransparency
     local camPos = Camera.CFrame.Position
@@ -563,7 +562,6 @@ local function UpdateESP()
         end
     end
 
-    -- insertion sort (n is small)
     for i = 2, n do
         local d, o = candDist[i], candObj[i]
         local j = i - 1
@@ -576,7 +574,7 @@ local function UpdateESP()
         candObj[j + 1] = o
     end
 
-    local limit = math.min(n, MAX_HIGHLIGHTS)
+    local limit = math_min(n, MAX_HIGHLIGHTS)
     for i = 1, limit do
         candObj[i]._rank = i
         candObj[i] = nil
@@ -617,7 +615,7 @@ local function UpdateESP()
 end
 
 -- ============================================================
--- Overlay ESP (25 Hz, only on highlighted targets)
+-- Overlay ESP (25 Hz, highlighted targets only)
 -- ============================================================
 local lastDraw = 0
 local TEXT = 14
@@ -862,12 +860,13 @@ local function GetTarget(fov, partName, wallCheck, prediction)
 end
 
 -- ============================================================
--- Weapon state capture + namecall hook
+-- Weapon state capture + hooks
 -- ============================================================
 local ShootRemote, ReloadRemote, EquipRemote
 local weaponState = nil
-local silentPos, silentStamp = nil, 0
-local mt, oldNamecall, hooked = nil, nil, false
+local mt, oldNamecall = nil, nil
+local crosshairHooked, namecallHooked = false, false
+local silentPos, silentStamp, silentPart = nil, 0, nil
 
 task.spawn(function()
     local se = ReplicatedStorage:WaitForChild("ServerEvents", 30)
@@ -877,52 +876,128 @@ task.spawn(function()
     EquipRemote = se:WaitForChild("Equip", 30)
 end)
 
-local function InstallHook()
-    if hooked then return true end
-    local ok = pcall(function()
-        mt = getrawmetatable(game)
-        oldNamecall = mt.__namecall
-        setreadonly(mt, false)
-        mt.__namecall = newcclosure(function(self, ...)
-            if checkcaller() then return oldNamecall(self, ...) end
+local function CaptureState(st)
+    if typeof(st) ~= "table" then return end
+    weaponState = st
+    if Settings.Misc.NoRecoil then
+        st.RecoilPattern = NO_RECOIL
+        local tool = st.Tool
+        if tool and tool:GetAttribute("Recoil") ~= 0 then
+            tool:SetAttribute("Recoil", 0)
+        end
+    end
+end
 
-            if self == ShootRemote or self == ReloadRemote or self == EquipRemote then
-                local st = select(1, ...)
-                if typeof(st) == "table" then
-                    weaponState = st
-                    if Settings.Misc.NoRecoil then
-                        st.RecoilPattern = NO_RECOIL
-                        local tool = st.Tool
-                        if tool and tool:GetAttribute("Recoil") ~= 0 then
-                            tool:SetAttribute("Recoil", 0)
-                        end
-                    end
-                end
-                if self == ShootRemote and silentPos then
-                    local args = { ... }
-                    if typeof(args[2]) == "Vector3" then
-                        args[2] = silentPos
-                        Settings.Perf.Shots = Settings.Perf.Shots + 1
-                        return oldNamecall(self, table.unpack(args, 1, select("#", ...)))
-                    end
-                end
+-- ---- primary hook: Crosshair decides the aim point before Shoot
+-- ---- builds its spread raycasts, so the hit table fills naturally
+local CrosshairOrig = nil
+
+local function InstallCrosshairHook()
+    if crosshairHooked then return true end
+    local ok = pcall(function()
+        local module = ReplicatedStorage:WaitForChild("WeaponModule")
+        require(module)
+        local env = getsenv(module)
+        local orig = env and env.Crosshair
+        assert(typeof(orig) == "function", "no Crosshair")
+        CrosshairOrig = orig
+        hookfunction(orig, newcclosure(function(...)
+            if silentPos and SilentActive() then
+                return silentPos
             end
-            return oldNamecall(self, ...)
-        end)
-        setreadonly(mt, true)
+            return CrosshairOrig(...)
+        end))
     end)
-    hooked = ok
+    crosshairHooked = ok
     return ok
 end
 
-local function UninstallHook()
-    if not hooked or not mt then return end
-    pcall(function()
-        setreadonly(mt, false)
-        mt.__namecall = oldNamecall
-        setreadonly(mt, true)
+-- ---- secondary hook: rewrite the remote args outright
+local function BuildHit(part)
+    return {{
+        Instance = part,
+        Position = part.Position,
+        Normal = (Camera.CFrame.Position - part.Position).Unit,
+        Material = part.Material,
+    }}
+end
+
+local function onNamecall(self, ...)
+    if checkcaller() then return oldNamecall(self, ...) end
+
+    if self == ShootRemote or self == ReloadRemote or self == EquipRemote then
+        local first = select(1, ...)
+        if typeof(first) == "table" then CaptureState(first) end
+
+        if self == ShootRemote and silentPos and silentPart and SilentActive() then
+            local n = select("#", ...)
+            local args = { ... }
+            if typeof(args[2]) == "Vector3" then
+                local camPos = Camera.CFrame.Position
+                args[2] = silentPos
+                if n >= 5 then
+                    args[4] = 1
+                    args[5] = BuildHit(silentPart)
+                end
+                if n >= 6 then args[6] = camPos end
+                Settings.Perf.Shots = Settings.Perf.Shots + 1
+                return oldNamecall(self, table.unpack(args, 1, n))
+            end
+        end
+    end
+    return oldNamecall(self, ...)
+end
+
+local function InstallNamecallHook()
+    if namecallHooked then return true end
+    local got = pcall(function()
+        mt = getrawmetatable(game)
+        oldNamecall = mt.__namecall
+        return typeof(oldNamecall) == "function"
     end)
-    hooked = false
+    if not got then return false end
+
+    local wrapper = newcclosure(onNamecall)
+
+    local ok = pcall(function()
+        hookmetamethod(game, "__namecall", wrapper)
+    end)
+    if not ok then
+        ok = pcall(function()
+            setreadonly(mt, false)
+            mt.__namecall = wrapper
+            setreadonly(mt, true)
+            return rawget(mt, "__namecall") == wrapper
+        end)
+    end
+    namecallHooked = ok
+    return ok
+end
+
+local function InstallHooks()
+    local cross = InstallCrosshairHook()
+    local nc = InstallNamecallHook()
+    return cross or nc, cross, nc
+end
+
+local function UninstallHooks()
+    if crosshairHooked and CrosshairOrig then
+        pcall(function()
+            local env = getsenv(ReplicatedStorage:WaitForChild("WeaponModule"))
+            if env and env.Crosshair ~= CrosshairOrig then
+                hookfunction(env.Crosshair, CrosshairOrig)
+            end
+        end)
+        crosshairHooked = false
+    end
+    if namecallHooked and mt and oldNamecall then
+        pcall(function()
+            setreadonly(mt, false)
+            mt.__namecall = oldNamecall
+            setreadonly(mt, true)
+        end)
+        namecallHooked = false
+    end
 end
 
 -- silent aim FOV circle
@@ -938,9 +1013,8 @@ if DrawingEnabled then
 end
 
 local function UpdateSilent()
-    local active = SilentActive()
-    if not active then
-        silentPos = nil
+    if not Settings.Silent.Enabled then
+        silentPos, silentPart = nil, nil
         if SilentCircle and SilentCircle.Visible then SilentCircle.Visible = false end
         return
     end
@@ -952,7 +1026,7 @@ local function UpdateSilent()
         SilentCircle.Visible = true
     end
 
-    local target, part = GetTarget(Settings.Silent.FOV, Settings.Silent.Part,
+    local _, part = GetTarget(Settings.Silent.FOV, Settings.Silent.Part,
         Settings.Silent.WallCheck, Settings.Silent.Prediction)
 
     if part then
@@ -960,10 +1034,10 @@ local function UpdateSilent()
         if Settings.Silent.Prediction > 0 then
             pos = pos + part.AssemblyLinearVelocity * (Settings.Silent.Prediction / 100)
         end
-        silentPos = pos
+        silentPos, silentPart = pos, part
         silentStamp = os.clock()
-    elseif silentPos and os.clock() - silentStamp > 0.4 then
-        silentPos = nil
+    elseif os.clock() - silentStamp > 0.5 then
+        silentPos, silentPart = nil, nil
     end
 end
 
@@ -1008,21 +1082,19 @@ task.spawn(function()
 
         if Settings.Misc.InstantRevive then
             local me = LocalPlayer.Character
-            if me then
-                local myPos = (me:FindFirstChild("HumanoidRootPart") or me.PrimaryPart)
-                if myPos then
-                    myPos = myPos.Position
-                    local list = Players:GetPlayers()
-                    for i = 1, #list do
-                        local p = list[i]
-                        if p ~= LocalPlayer and p.Character and p.Team == LocalPlayer.Team then
-                            local root = p.Character:FindFirstChild("HumanoidRootPart")
-                            if root and (root.Position - myPos).Magnitude < 14 then
-                                local d = p.Character:GetDescendants()
-                                for j = 1, #d do
-                                    if d[j]:IsA("ProximityPrompt") then
-                                        pcall(fireproximityprompt, d[j])
-                                    end
+            local myRoot = me and me:FindFirstChild("HumanoidRootPart")
+            if myRoot then
+                local myPos = myRoot.Position
+                local list = Players:GetPlayers()
+                for i = 1, #list do
+                    local p = list[i]
+                    if p ~= LocalPlayer and p.Character and p.Team == LocalPlayer.Team then
+                        local root = p.Character:FindFirstChild("HumanoidRootPart")
+                        if root and (root.Position - myPos).Magnitude < 14 then
+                            local d = p.Character:GetDescendants()
+                            for j = 1, #d do
+                                if d[j]:IsA("ProximityPrompt") then
+                                    pcall(fireproximityprompt, d[j])
                                 end
                             end
                         end
@@ -1073,7 +1145,7 @@ end
 -- ============================================================
 local fps, lastFps = 0, os.clock()
 
-RunService.RenderStepped:Connect(function(dt)
+RunService.RenderStepped:Connect(function()
     RefreshCamera()
     fps = fps + 1
     local now = os.clock()
@@ -1186,7 +1258,7 @@ local function ShowSelfStats()
                 "Status: " .. BanLabel(st.Banned),
                 "Rank: " .. tostring(g.Rank or "?"),
                 "Class: " .. tostring(g.MainClass or "?"),
-                "K/D: " .. string.format("%.2f", (g.Kills or 0) / math.max(1, g.Deaths or 0)),
+                "K/D: " .. string.format("%.2f", (g.Kills or 0) / math_max(1, g.Deaths or 0)),
                 "Wins: " .. tostring(g.WinRate or 0) .. "%",
                 "Playtime: " .. tostring(g.PlaytimeDisplay or "?"),
             }, "\n"),
@@ -1206,13 +1278,19 @@ local PerfTab   = Window:CreateTab("Perf", "activity")
 CombatTab:CreateSection("Silent Aim")
 CombatTab:CreateToggle({ Name = "Enable", CurrentValue = false, Flag = "SilentOn",
     Callback = function(v)
-        if v and not InstallHook() then
-            Rayfield:Notify({ Title = "Unsupported",
-                Content = "No metatable hooks on this executor.", Duration = 5 })
-            return
+        if v then
+            local any, cross, nc = InstallHooks()
+            if not any then
+                Rayfield:Notify({ Title = "Unsupported",
+                    Content = "No hook API on this executor.", Duration = 5 })
+                return
+            end
+            Rayfield:Notify({ Title = "Silent aim on",
+                Content = ("Crosshair: %s   Remote: %s"):format(tostring(cross), tostring(nc)),
+                Duration = 4 })
         end
         Settings.Silent.Enabled = v
-        if not v then UninstallHook() end
+        if not v then UninstallHooks() end
     end })
 CombatTab:CreateDropdown({ Name = "Key", Options = {"LMB","RMB","LeftShift","LeftAlt","Always"},
     CurrentOption = {"LMB"}, Flag = "SilentKey",
