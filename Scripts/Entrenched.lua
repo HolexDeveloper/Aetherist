@@ -1,17 +1,14 @@
 --[[
     Entrenched | Combat Suite v1.3
     --------------------------------------------------------------
-      * SILENT AIM (real): Crosshair hook decides the aim point before
-        Shoot builds its raycasts, remote rewrite forces the damage
-        payload. hookmetamethod with a verified fallback.
+      * Silent aim: module env assignment instead of hookfunction
+        (no recursion crash), 30 Hz throttled scan, 3 raycast budget
       * Exploits: Rapid Fire, Instant Reload, No Recoil, No Spread,
-        Instant Revive, driven off the captured weapon state
+        Instant Revive
       * Enemy-only ESP, team read live
       * Ban status parsed correctly -> "Banned" / "Safe"
       * Overlays hide instantly when their toggle goes off
       * Chunked frustum + distance culling, budgeted
-      * Perf: highlight cap, drawing reuse, ring buffer, hooks only
-        installed while silent aim is on
     --------------------------------------------------------------
 ]]
 
@@ -391,7 +388,7 @@ local function CheckVisibility(origin, targetPos, targetChar)
     IgnoreList[1] = LocalPlayer.Character
     RParams.FilterDescendantsInstances = IgnoreList
 
-    for _ = 1, 16 do
+    for _ = 1, 12 do
         local result = Raycast(workspace, origin, dir, RParams)
         if not result then return true end
         if result.Instance:IsDescendantOf(targetChar) then return true end
@@ -529,7 +526,7 @@ local SKELETON = {
 }
 
 -- ============================================================
--- Chams (8 Hz, capped)
+-- Chams
 -- ============================================================
 local lastESP = 0
 local candObj, candDist = {}, {}
@@ -615,7 +612,7 @@ local function UpdateESP()
 end
 
 -- ============================================================
--- Overlay ESP (25 Hz, highlighted targets only)
+-- Overlay ESP
 -- ============================================================
 local lastDraw = 0
 local TEXT = 14
@@ -815,17 +812,22 @@ local function SilentActive()
 end
 
 -- ============================================================
--- Target search
+-- Target search: two phase, capped
 -- ============================================================
+local SCAN_CAP = 24
+local RAY_CAP  = 3
+local scanPlayer, scanPart, scanDist = {}, {}, {}
+
 local function GetTarget(fov, partName, wallCheck, prediction)
-    local shortest = fov * fov
-    local best, bestPart = nil, nil
+    local fovSq = fov * fov
     local mouse = GetMouseLocation(UserInputService)
     local camPos = Camera.CFrame.Position
     local localTeam = LocalPlayer.Team
     local pred = prediction / 100
+    local n = 0
 
     for i = 1, #ESP_Array do
+        if n >= SCAN_CAP then break end
         local player = ESP_Array[i].Player
         local cache = PlayerCache[player]
         if cache and cache.Character and cache.Humanoid and cache.Humanoid.Health > 0 then
@@ -837,18 +839,17 @@ local function GetTarget(fov, partName, wallCheck, prediction)
                 else part = cache.RootPart end
                 if part then
                     local pos = part.Position
-                    if pred > 0 then pos = pos + part.AssemblyLinearVelocity * pred end
                     local rx, ry, rz = pos.X - camPos.X, pos.Y - camPos.Y, pos.Z - camPos.Z
                     if rx*rx + ry*ry + rz*rz <= 810000 then
                         local sp, onScreen = WorldToViewportPoint(Camera, pos)
                         if onScreen then
                             local dx, dy = sp.X - mouse.X, sp.Y - mouse.Y
                             local dSq = dx*dx + dy*dy
-                            if dSq < shortest then
-                                if not wallCheck or CheckVisibility(camPos, pos, cache.Character) then
-                                    shortest = dSq
-                                    best, bestPart = player, part
-                                end
+                            if dSq < fovSq then
+                                n = n + 1
+                                scanPlayer[n] = player
+                                scanPart[n] = part
+                                scanDist[n] = dSq
                             end
                         end
                     end
@@ -856,7 +857,51 @@ local function GetTarget(fov, partName, wallCheck, prediction)
             end
         end
     end
-    return best, bestPart
+
+    if n == 0 then return nil, nil end
+
+    for i = 2, n do
+        local d, p, pt = scanDist[i], scanPlayer[i], scanPart[i]
+        local j = i - 1
+        while j > 0 and scanDist[j] > d do
+            scanDist[j + 1] = scanDist[j]
+            scanPlayer[j + 1] = scanPlayer[j]
+            scanPart[j + 1] = scanPart[j]
+            j = j - 1
+        end
+        scanDist[j + 1] = d
+        scanPlayer[j + 1] = p
+        scanPart[j + 1] = pt
+    end
+
+    local rays = 0
+    for i = 1, n do
+        local part = scanPart[i]
+        local player = scanPlayer[i]
+        local pos = part.Position
+        if pred > 0 then pos = pos + part.AssemblyLinearVelocity * pred end
+
+        if not wallCheck then
+            for k = 1, n do
+                scanPlayer[k], scanPart[k], scanDist[k] = nil, nil, nil
+            end
+            return player, part
+        end
+
+        if rays >= RAY_CAP then break end
+        rays = rays + 1
+        if CheckVisibility(camPos, pos, PlayerCache[player].Character) then
+            for k = 1, n do
+                scanPlayer[k], scanPart[k], scanDist[k] = nil, nil, nil
+            end
+            return player, part
+        end
+    end
+
+    for k = 1, n do
+        scanPlayer[k], scanPart[k], scanDist[k] = nil, nil, nil
+    end
+    return nil, nil
 end
 
 -- ============================================================
@@ -866,7 +911,10 @@ local ShootRemote, ReloadRemote, EquipRemote
 local weaponState = nil
 local mt, oldNamecall = nil, nil
 local crosshairHooked, namecallHooked = false, false
+local crosshairEnv, crosshairOrig = nil, nil
 local silentPos, silentStamp, silentPart = nil, 0, nil
+local silentNext = 0
+local SILENT_RATE = 0.034
 
 task.spawn(function()
     local se = ReplicatedStorage:WaitForChild("ServerEvents", 30)
@@ -888,31 +936,28 @@ local function CaptureState(st)
     end
 end
 
--- ---- primary hook: Crosshair decides the aim point before Shoot
--- ---- builds its spread raycasts, so the hit table fills naturally
-local CrosshairOrig = nil
-
+-- ---- swap the module's Crosshair global. Plain table write, no
+-- ---- hookfunction, so there is no redirection/recursion hazard
 local function InstallCrosshairHook()
     if crosshairHooked then return true end
     local ok = pcall(function()
         local module = ReplicatedStorage:WaitForChild("WeaponModule")
-        require(module)
         local env = getsenv(module)
-        local orig = env and env.Crosshair
+        assert(env, "no env")
+        local orig = env.Crosshair
         assert(typeof(orig) == "function", "no Crosshair")
-        CrosshairOrig = orig
-        hookfunction(orig, newcclosure(function(...)
-            if silentPos and SilentActive() then
-                return silentPos
-            end
-            return CrosshairOrig(...)
-        end))
+        crosshairEnv, crosshairOrig = env, orig
+        env.Crosshair = newcclosure(function(...)
+            if silentPos then return silentPos end
+            return crosshairOrig(...)
+        end)
+        assert(env.Crosshair ~= orig, "assign failed")
     end)
+    if not ok then crosshairEnv, crosshairOrig = nil, nil end
     crosshairHooked = ok
     return ok
 end
 
--- ---- secondary hook: rewrite the remote args outright
 local function BuildHit(part)
     return {{
         Instance = part,
@@ -923,13 +968,12 @@ local function BuildHit(part)
 end
 
 local function onNamecall(self, ...)
-    if checkcaller() then return oldNamecall(self, ...) end
-
     if self == ShootRemote or self == ReloadRemote or self == EquipRemote then
+        if checkcaller() then return oldNamecall(self, ...) end
         local first = select(1, ...)
         if typeof(first) == "table" then CaptureState(first) end
 
-        if self == ShootRemote and silentPos and silentPart and SilentActive() then
+        if self == ShootRemote and silentPos and silentPart then
             local n = select("#", ...)
             local args = { ... }
             if typeof(args[2]) == "Vector3" then
@@ -981,13 +1025,8 @@ local function InstallHooks()
 end
 
 local function UninstallHooks()
-    if crosshairHooked and CrosshairOrig then
-        pcall(function()
-            local env = getsenv(ReplicatedStorage:WaitForChild("WeaponModule"))
-            if env and env.Crosshair ~= CrosshairOrig then
-                hookfunction(env.Crosshair, CrosshairOrig)
-            end
-        end)
+    if crosshairHooked and crosshairEnv and crosshairOrig then
+        pcall(function() crosshairEnv.Crosshair = crosshairOrig end)
         crosshairHooked = false
     end
     if namecallHooked and mt and oldNamecall then
@@ -1005,7 +1044,7 @@ local SilentCircle
 if DrawingEnabled then
     SilentCircle = Drawing.new("Circle")
     SilentCircle.Thickness = 1
-    SilentCircle.NumSides = 72
+    SilentCircle.NumSides = 64
     SilentCircle.Filled = false
     SilentCircle.Color = Color3.fromRGB(0, 255, 240)
     SilentCircle.Transparency = 0.7
@@ -1026,6 +1065,17 @@ local function UpdateSilent()
         SilentCircle.Visible = true
     end
 
+    if not SilentActive() then
+        if os.clock() - silentStamp > 0.35 then
+            silentPos, silentPart = nil, nil
+        end
+        return
+    end
+
+    local now = os.clock()
+    if now < silentNext then return end
+    silentNext = now + SILENT_RATE
+
     local _, part = GetTarget(Settings.Silent.FOV, Settings.Silent.Part,
         Settings.Silent.WallCheck, Settings.Silent.Prediction)
 
@@ -1035,8 +1085,8 @@ local function UpdateSilent()
             pos = pos + part.AssemblyLinearVelocity * (Settings.Silent.Prediction / 100)
         end
         silentPos, silentPart = pos, part
-        silentStamp = os.clock()
-    elseif os.clock() - silentStamp > 0.5 then
+        silentStamp = now
+    elseif now - silentStamp > 0.35 then
         silentPos, silentPart = nil, nil
     end
 end
@@ -1290,7 +1340,10 @@ CombatTab:CreateToggle({ Name = "Enable", CurrentValue = false, Flag = "SilentOn
                 Duration = 4 })
         end
         Settings.Silent.Enabled = v
-        if not v then UninstallHooks() end
+        if not v then
+            UninstallHooks()
+            silentPos, silentPart = nil, nil
+        end
     end })
 CombatTab:CreateDropdown({ Name = "Key", Options = {"LMB","RMB","LeftShift","LeftAlt","Always"},
     CurrentOption = {"LMB"}, Flag = "SilentKey",
@@ -1449,7 +1502,7 @@ end)
 
 Rayfield:Notify({
     Title = "Entrenched v1.3",
-    Content = "Silent aim + exploits ready. Chams is enemy-only.",
+    Content = "Silent aim rebuilt: no recursion, throttled scan.",
     Duration = 5,
     Image = "crosshair",
 })
