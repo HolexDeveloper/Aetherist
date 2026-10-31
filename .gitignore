@@ -1,0 +1,4 @@
+# CodeGraph local index and binaries
+.codegraph/
+codegraph-win32-x64/
+codegraph.json
